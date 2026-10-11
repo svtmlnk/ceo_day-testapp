@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, viewport-fit=cover"
+    />
+    <title>День коммерсанта</title>
+
+    <!-- Без входа — на страницу авторизации -->
+    <script src="./auth-store.js"></script>
+    <script>
+      Auth.requireAuth();
+    </script>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=PT+Serif:ital,wght@0,700;1,400&display=swap"
+    />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+
+  <body>
+    <!-- Основное содержимое рисуется из app.js -->
+    <main class="page" id="app"></main>
+
+    <!-- Настройки: роль, утренний ритуал, цели касаний -->
+    <dialog class="dialog" id="settings-dialog">
+      <form class="dialog__form" id="settings-form">
+        <header class="dialog__header">
+          <h2 class="dialog__title">Настройки</h2>
+        </header>
+
+        <div class="dialog__body">
+          <div class="field">
+            <span class="field__label">Моя роль</span>
+            <div class="segmented" id="settings-role">
+              <button
+                class="segmented__option"
+                type="button"
+                data-role="manager"
+              >
+                Менеджер по продажам
+              </button>
+              <button
+                class="segmented__option"
+                type="button"
+                data-role="director"
+              >
+                Руководитель
+              </button>
+            </div>
+          </div>
+
+          <div class="field">
+            <label class="field__label" for="settings-ritual">
+              Утренний ритуал — по пункту в строке
+            </label>
+            <textarea
+              class="input input--textarea"
+              id="settings-ritual"
+              rows="6"
+            ></textarea>
+          </div>
+
+          <div class="field">
+            <span class="field__label">Цели касаний на день</span>
+            <div class="dialog__targets" id="settings-targets"></div>
+          </div>
+        </div>
+
+        <footer class="dialog__footer">
+          <button class="button" type="button" id="settings-cancel">
+            Отмена
+          </button>
+          <button class="button button--primary" type="submit">
+            Сохранить
+          </button>
+        </footer>
+      </form>
+    </dialog>
+
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.117.3/dist/umd/supabase.min.js"></script>
+    <script src="./supabase-client.js"></script>
+    <script src="./app.js"></script>
+  </body>
+</html>

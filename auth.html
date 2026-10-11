@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, viewport-fit=cover"
+    />
+    <title>Вход — День коммерсанта</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=PT+Serif:ital,wght@0,700;1,400&display=swap"
+    />
+    <link rel="stylesheet" href="./styles.css" />
+
+    <!-- Уже вошли — сразу в приложение -->
+    <script src="./auth-store.js"></script>
+    <script>
+      Auth.redirectIfAuthed();
+    </script>
+  </head>
+
+  <body>
+    <main class="auth">
+      <section class="auth__card">
+        <header>
+          <h1 class="auth__brand" id="auth-title">С возвращением</h1>
+          <p class="auth__subtitle" id="auth-subtitle">
+            Войдите, чтобы открыть свой день
+          </p>
+        </header>
+
+        <div class="segmented" id="auth-mode">
+          <button
+            class="segmented__option"
+            type="button"
+            data-mode="login"
+            aria-pressed="true"
+          >
+            Вход
+          </button>
+          <button
+            class="segmented__option"
+            type="button"
+            data-mode="register"
+            aria-pressed="false"
+          >
+            Регистрация
+          </button>
+        </div>
+
+        <form class="auth__form" id="auth-form" novalidate>
+          <div class="field" id="auth-nickname-field" hidden>
+            <label class="field__label" for="auth-nickname">Никнейм</label>
+            <input
+              class="input"
+              id="auth-nickname"
+              type="text"
+              autocomplete="nickname"
+              maxlength="30"
+              disabled
+            />
+          </div>
+
+          <div class="field">
+            <label class="field__label" for="auth-email">Почта</label>
+            <input
+              class="input"
+              id="auth-email"
+              type="email"
+              autocomplete="email"
+              inputmode="email"
+              autocapitalize="none"
+              spellcheck="false"
+            />
+          </div>
+
+          <div class="field">
+            <label class="field__label" for="auth-password">Пароль</label>
+            <input
+              class="input"
+              id="auth-password"
+              type="password"
+              autocomplete="current-password"
+            />
+          </div>
+
+          <p class="auth__error" id="auth-error" role="alert" hidden></p>
+
+          <button
+            class="button button--primary auth__submit"
+            id="auth-submit"
+            type="submit"
+          >
+            Войти
+          </button>
+        </form>
+      </section>
+    </main>
+
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.117.3/dist/umd/supabase.min.js"></script>
+    <script src="./supabase-client.js"></script>
+    <script src="./auth.js"></script>
+  </body>
+</html>
