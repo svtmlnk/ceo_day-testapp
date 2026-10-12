@@ -392,6 +392,12 @@ button {
   color: var(--muted);
 }
 
+/* подсказка под полем */
+.field__hint {
+  color: var(--muted);
+  font-size: 12px;
+}
+
 /* input — текстовое поле, textarea и время */
 .input {
   width: 100%;
@@ -746,9 +752,36 @@ button {
 
 .schedule__block {
   display: grid;
-  grid-template-columns: 78px 1fr 30px;
+  grid-template-columns: auto 1fr 30px;
   align-items: center;
   gap: 8px;
+}
+
+/* начало – конец блока */
+.schedule__time {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.schedule__time .input--time {
+  flex: none;
+  width: 78px;
+}
+
+.schedule__dash {
+  color: var(--muted);
+}
+
+/* на узком экране время — отдельной строкой над названием блока */
+@media (max-width: 560px) {
+  .schedule__block {
+    grid-template-columns: 1fr 30px;
+  }
+
+  .schedule__time {
+    grid-column: 1 / -1;
+  }
 }
 
 .schedule__actions {

@@ -100,14 +100,14 @@
         ["newContacts", "Новые контакты", 5],
       ],
       scheduleTemplate: [
-        ["08:30", "Ритуал и план дня"],
-        ["09:00", "Самая трудная задача"],
-        ["10:30", "Блок звонков"],
-        ["13:00", "Обед без телефона"],
-        ["14:00", "Встречи и созвоны"],
-        ["16:00", "КП, почта, мессенджеры"],
-        ["17:30", "Обучение: 30 минут"],
-        ["18:00", "Вечерний разбор"],
+        ["08:30", "09:00", "Ритуал и план дня"],
+        ["09:00", "10:30", "Самая трудная задача"],
+        ["10:30", "13:00", "Блок звонков"],
+        ["13:00", "14:00", "Обед без телефона"],
+        ["14:00", "16:00", "Встречи и созвоны"],
+        ["16:00", "17:30", "КП, почта, мессенджеры"],
+        ["17:30", "18:00", "Обучение: 30 минут"],
+        ["18:00", "18:30", "Вечерний разбор"],
       ],
     },
     director: {
@@ -119,14 +119,14 @@
         ["strategyHours", "Часы на стратегию", 2],
       ],
       scheduleTemplate: [
-        ["07:30", "Ритуал и план дня"],
-        ["08:30", "Стратегия: глубокая работа"],
-        ["10:30", "Ключевые клиенты и партнёры"],
-        ["13:00", "Обед"],
-        ["14:00", "Встречи 1:1 с командой"],
-        ["16:00", "Решения и согласования"],
-        ["17:30", "Чтение и обучение"],
-        ["18:30", "Вечерний разбор"],
+        ["07:30", "08:30", "Ритуал и план дня"],
+        ["08:30", "10:30", "Стратегия: глубокая работа"],
+        ["10:30", "13:00", "Ключевые клиенты и партнёры"],
+        ["13:00", "14:00", "Обед"],
+        ["14:00", "16:00", "Встречи 1:1 с командой"],
+        ["16:00", "17:30", "Решения и согласования"],
+        ["17:30", "18:30", "Чтение и обучение"],
+        ["18:30", "19:00", "Вечерний разбор"],
       ],
     },
   };
@@ -391,9 +391,10 @@
     return {
       date,
       ritualDone: [], // тексты выполненных пунктов ритуала
+      challenge: "", // свой вызов дня; пусто — берётся из списка CHALLENGES
       challengeDone: false,
       counts: {}, // { ключ счётчика: число касаний }
-      schedule: [], // [{ time, text }]
+      schedule: [], // [{ time: начало, end: конец, text }]
       tasks: [], // [{ text, done }]
       wins: ["", "", ""],
       improvement: "",
@@ -626,9 +627,19 @@
 
   /* ---------- Утро ---------- */
 
+  /** Автоматический вызов дня — по дате, из списка CHALLENGES */
+  function getAutoChallenge(dateKey) {
+    return pickForDate(CHALLENGES, dateKey, 7);
+  }
+
+  /** Свой вызов (из настроек, хранится в записи дня) или автоматический */
+  function getChallengeText(day) {
+    return day.challenge?.trim() || getAutoChallenge(day.date);
+  }
+
   function renderMorning(day) {
     const [quoteText, quoteAuthor] = pickForDate(QUOTES, state.currentDate);
-    const challenge = pickForDate(CHALLENGES, state.currentDate, 7);
+    const challenge = getChallengeText(day);
 
     const ritualItems = state.settings.ritual
       .map((item, index) => {
@@ -721,7 +732,7 @@
 
   /* ---------- Расписание ---------- */
 
-  /** Блоки по времени. Блоки без времени — в конец. Индекс нужен для правки исходного массива */
+  /** Блоки по времени начала. Блоки без времени — в конец. Индекс нужен для правки исходного массива */
   function getSortedBlocks(day) {
     return day.schedule
       .map((block, index) => ({ ...block, index }))
@@ -738,6 +749,11 @@
     sortedBlocks.forEach((block, i) => {
       if (block.time && block.time <= nowTime) position = i;
     });
+
+    // Блок уже закончился — подсвечивать нечего
+    if (position >= 0 && sortedBlocks[position].end && sortedBlocks[position].end <= nowTime) {
+      return -1;
+    }
     return position;
   }
 
@@ -745,7 +761,11 @@
     const currentModifier = isCurrent ? " input--current" : "";
     return `
       <div class="schedule__block">
-        <input class="input input--time${currentModifier}" type="time" id="block-time-${block.index}" data-field="block-time" data-index="${block.index}" value="${escapeHtml(block.time || "")}">
+        <div class="schedule__time">
+          <input class="input input--time${currentModifier}" type="time" id="block-time-${block.index}" data-field="block-time" data-index="${block.index}" value="${escapeHtml(block.time || "")}" aria-label="Начало блока">
+          <span class="schedule__dash" aria-hidden="true">–</span>
+          <input class="input input--time${currentModifier}" type="time" data-field="block-end" data-index="${block.index}" value="${escapeHtml(block.end || "")}" min="${escapeHtml(block.time || "")}" aria-label="Конец блока">
+        </div>
         <input class="input${currentModifier}" id="block-text-${block.index}" data-field="block-text" data-index="${block.index}" value="${escapeHtml(block.text)}" placeholder="Блок">
         <button class="delete-button" data-action="delete-block" data-index="${block.index}" aria-label="Удалить блок">×</button>
       </div>`;
@@ -878,6 +898,7 @@
     "task-text": (day, el, index) => (day.tasks[index].text = el.value),
     "block-text": (day, el, index) => (day.schedule[index].text = el.value),
     "block-time": (day, el, index) => (day.schedule[index].time = el.value),
+    "block-end": (day, el, index) => (day.schedule[index].end = el.value),
   };
 
   /* Переключатели и завершение ввода времени: сохраняем сразу и перерисовываем */
@@ -890,8 +911,17 @@
     },
     challenge: (day, el) => (day.challengeDone = el.checked),
     "task-done": (day, el, index) => (day.tasks[index].done = el.checked),
-    "block-time": () => {}, // значение уже записано; нужна только пересортировка
+    "block-time": (day, el, index) => validateBlockTimes(day.schedule[index]),
+    "block-end": (day, el, index) => validateBlockTimes(day.schedule[index]),
   };
+
+  /* Конец блока должен быть позже начала, иначе конец сбрасывается */
+  function validateBlockTimes(block) {
+    if (block.time && block.end && block.end <= block.time) {
+      block.end = "";
+      showToast("Конец блока должен быть позже начала");
+    }
+  }
 
   appElement.addEventListener("input", (event) => {
     const el = event.target;
@@ -958,14 +988,14 @@
 
     "add-block": () => {
       const day = getDay();
-      day.schedule.push({ time: "", text: "" });
+      day.schedule.push({ time: "", end: "", text: "" });
       saveDay();
       renderApp();
       document.getElementById(`block-time-${day.schedule.length - 1}`)?.focus();
     },
 
     "apply-template": () => {
-      getDay().schedule = getRole().scheduleTemplate.map(([time, text]) => ({ time, text }));
+      getDay().schedule = getRole().scheduleTemplate.map(([time, end, text]) => ({ time, end, text }));
       saveDay(state.currentDate, { immediately: true });
       renderApp();
     },
@@ -1014,7 +1044,7 @@
   /* Клик в любое место поля времени открывает окно выбора (а не только по иконке часов) */
   appElement.addEventListener("click", (event) => {
     const input = event.target;
-    if (input.dataset?.field !== "block-time") return;
+    if (!["block-time", "block-end"].includes(input.dataset?.field)) return;
 
     try {
       input.showPicker();
@@ -1158,8 +1188,22 @@
   function openSettings() {
     draftRole = state.settings.role;
     $("#settings-ritual").value = state.settings.ritual.join("\n");
+    renderSettingsChallenge();
     renderSettingsRole();
     settingsDialog.showModal();
+  }
+
+  /* Вызов дня относится к дню, который сейчас открыт на странице */
+  function renderSettingsChallenge() {
+    const dateTitle = new Date(`${state.currentDate}T12:00`).toLocaleDateString(
+      "ru-RU",
+      { day: "numeric", month: "long" },
+    );
+    const input = $("#settings-challenge");
+
+    $("#settings-challenge-label").textContent = `Вызов дня — ${dateTitle}`;
+    input.value = getDay().challenge || "";
+    input.placeholder = getAutoChallenge(state.currentDate);
   }
 
   /* Подсвечивает выбранную роль и показывает цели именно для неё */
@@ -1210,6 +1254,15 @@
       ritual: ritual.length ? ritual : [...DEFAULT_RITUAL],
       targets,
     };
+
+    // Вызов дня хранится в записи дня, а значит — в базе вместе с остальным днём
+    const day = getDay();
+    const challenge = $("#settings-challenge").value.trim();
+    if (challenge !== (day.challenge || "")) {
+      day.challenge = challenge;
+      day.challengeDone = false; // новый вызов — новая отметка
+      saveDay(state.currentDate, { immediately: true });
+    }
 
     saveSettings();
     settingsDialog.close();
