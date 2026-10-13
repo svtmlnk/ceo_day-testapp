@@ -140,6 +140,7 @@
 
   const DEFAULT_ROLE = "manager";
   const MAX_RITUAL_ITEMS = 12;
+  const MAX_PLAN_TASKS = 50; // задач в поле «Мои задачи на сегодня»
 
   /* Из чего складываются очки дня (в сумме 100) */
   const SCORE_WEIGHTS = { ritual: 25, touches: 50, review: 25 };
@@ -216,6 +217,28 @@
       return few;
     }
     return many;
+  }
+
+  /** Сколько задач в списке: считаются строки с текстом */
+  function countPlanTasks(plan) {
+    return plan.filter((task) => task.text.trim()).length;
+  }
+
+  /** Приводит план дня к списку [{ text, done }]. Старый формат — текст, по задаче в строке */
+  function normalizePlan(plan) {
+    if (typeof plan === "string") {
+      return plan
+        .split("\n")
+        .map((line) => line.trim())
+        .filter(Boolean)
+        .slice(0, MAX_PLAN_TASKS)
+        .map((text) => ({ text, done: false }));
+    }
+    if (!Array.isArray(plan)) return [];
+    return plan.map((task) => ({
+      text: String(task?.text ?? ""),
+      done: Boolean(task?.done),
+    }));
   }
 
   function formatTimer(totalSeconds) {
@@ -317,7 +340,9 @@
         } catch (parseError) {
           /* битая запись — покажем пустой день, при сохранении она перезапишется */
         }
-        days[row.date] = { ...createEmptyDay(row.date), ...(saved || {}), date: row.date };
+        const day = { ...createEmptyDay(row.date), ...(saved || {}), date: row.date };
+        day.plan = normalizePlan(day.plan);
+        days[row.date] = day;
       });
       return days;
     },
@@ -391,6 +416,7 @@
     return {
       date,
       ritualDone: [], // тексты выполненных пунктов ритуала
+      plan: [], // «Мои задачи на сегодня» — [{ text, done }]
       challenge: "", // свой вызов дня; пусто — берётся из списка CHALLENGES
       challengeDone: false,
       counts: {}, // { ключ счётчика: число касаний }
@@ -665,6 +691,8 @@
           <figcaption class="quote__author">— ${escapeHtml(quoteAuthor)}</figcaption>
         </figure>
 
+        ${renderPlan(day)}
+
         <div class="challenge">
           <strong class="challenge__title">Вызов дня</strong>
           <label class="challenge__label">
@@ -678,6 +706,34 @@
           <div class="checklist">${ritualItems}</div>
         </div>
       </section>`;
+  }
+
+  /* ---------- Мои задачи на сегодня ---------- */
+
+  function renderPlan(day) {
+    const isToday = state.currentDate === getTodayKey();
+
+    // Пока задач нет, показываем одну пустую строку — она появится в данных при вводе
+    const rows = day.plan.length ? day.plan : [{ text: "", done: false }];
+
+    return `
+        <div class="plan">
+          <div class="plan__header">
+            <span class="plan__title">Мои задачи на ${isToday ? "сегодня" : "этот день"}</span>
+            <span class="plan__count" id="plan-count">${countPlanTasks(day.plan)}/${MAX_PLAN_TASKS}</span>
+          </div>
+          <div class="plan__list">${rows.map(renderPlanTask).join("")}</div>
+          <button class="button button--dawn" type="button" data-action="save-plan">Сохранить задачи</button>
+        </div>`;
+  }
+
+  function renderPlanTask(task, index) {
+    return `
+          <div class="plan__row">
+            <input class="input input--plain${task.done ? " input--done" : ""}" id="plan-text-${index}" data-field="plan-text" data-index="${index}" value="${escapeHtml(task.text)}" placeholder="${index === 0 ? "Впишите задачу и нажмите Enter" : "Задача"}" aria-label="Задача ${index + 1}">
+            <input class="checkbox" type="checkbox" data-field="plan-done" data-index="${index}" ${task.done ? "checked" : ""} aria-label="Выполнена">
+            <button class="delete-button" type="button" data-action="delete-plan-task" data-index="${index}" aria-label="Удалить задачу">×</button>
+          </div>`;
   }
 
   /* ---------- Фокус (только таймер) ---------- */
@@ -891,8 +947,30 @@
      7. Обработчики событий
      ====================================================================== */
 
+  /** Задача плана по индексу; пустая строка-заготовка создаётся в данных при первом вводе */
+  function getPlanTask(day, index) {
+    if (!day.plan[index]) day.plan[index] = { text: "", done: false };
+    return day.plan[index];
+  }
+
+  /** Перерисовывает страницу и ставит курсор в строку плана */
+  function focusPlanTask(index, caret = "end") {
+    renderApp();
+    const input = document.getElementById(`plan-text-${index}`);
+    if (!input) return;
+    input.focus();
+    const position = caret === "start" ? 0 : input.value.length;
+    input.setSelectionRange(position, position);
+  }
+
   /* Ввод текста: обновляем день и сохраняем с задержкой, без перерисовки */
   const INPUT_HANDLERS = {
+    "plan-text": (day, el, index) => {
+      getPlanTask(day, index).text = el.value;
+
+      const counter = $("#plan-count");
+      if (counter) counter.textContent = `${countPlanTasks(day.plan)}/${MAX_PLAN_TASKS}`;
+    },
     improvement: (day, el) => (day.improvement = el.value),
     win: (day, el, index) => (day.wins[index] = el.value),
     "task-text": (day, el, index) => (day.tasks[index].text = el.value),
@@ -910,6 +988,7 @@
         : day.ritualDone.filter((done) => done !== item);
     },
     challenge: (day, el) => (day.challengeDone = el.checked),
+    "plan-done": (day, el, index) => (getPlanTask(day, index).done = el.checked),
     "task-done": (day, el, index) => (day.tasks[index].done = el.checked),
     "block-time": (day, el, index) => validateBlockTimes(day.schedule[index]),
     "block-end": (day, el, index) => validateBlockTimes(day.schedule[index]),
@@ -945,14 +1024,71 @@
 
   /* Enter в поле задачи создаёт новую задачу под ней */
   appElement.addEventListener("keydown", (event) => {
-    if (event.key !== "Enter" || event.target.dataset.field !== "task-text") return;
+    const field = event.target.dataset?.field;
+    const index = Number(event.target.dataset?.index);
+
+    if (field === "plan-text") {
+      const day = getDay();
+
+      if (event.key === "Enter") {
+        event.preventDefault();
+        if (day.plan.length >= MAX_PLAN_TASKS) {
+          showToast(`Не больше ${MAX_PLAN_TASKS} задач`);
+          return;
+        }
+        getPlanTask(day, index);
+        day.plan.splice(index + 1, 0, { text: "", done: false });
+        saveDay();
+        focusPlanTask(index + 1);
+      }
+
+      // Backspace в пустой строке удаляет её и возвращает курсор выше
+      if (event.key === "Backspace" && !event.target.value && index > 0) {
+        event.preventDefault();
+        day.plan.splice(index, 1);
+        saveDay();
+        focusPlanTask(index - 1);
+      }
+      return;
+    }
+
+    if (event.key !== "Enter" || field !== "task-text") return;
 
     event.preventDefault();
-    const nextIndex = Number(event.target.dataset.index) + 1;
+    const nextIndex = index + 1;
     getDay().tasks.splice(nextIndex, 0, { text: "", done: false });
     saveDay();
     renderApp();
     document.getElementById(`task-${nextIndex}`)?.focus();
+  });
+
+  /* Вставка нескольких строк раскладывается по отдельным задачам */
+  appElement.addEventListener("paste", (event) => {
+    const input = event.target;
+    if (input.dataset?.field !== "plan-text") return;
+
+    const pasted = event.clipboardData?.getData("text") || "";
+    if (!/[\r\n]/.test(pasted)) return; // одна строка — обычная вставка
+
+    event.preventDefault();
+    const day = getDay();
+    const index = Number(input.dataset.index);
+    const task = getPlanTask(day, index);
+
+    const merged =
+      input.value.slice(0, input.selectionStart) + pasted + input.value.slice(input.selectionEnd);
+    const texts = merged.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+    if (!texts.length) return;
+
+    const room = MAX_PLAN_TASKS - (day.plan.length - 1);
+    if (texts.length > room) showToast(`Не больше ${MAX_PLAN_TASKS} задач`);
+    const added = texts.slice(0, Math.max(1, room));
+
+    const [first, ...rest] = added;
+    task.text = first;
+    day.plan.splice(index + 1, 0, ...rest.map((text) => ({ text, done: false })));
+    saveDay();
+    focusPlanTask(index + added.length - 1);
   });
 
   /* Нажатия на кнопки: действие определяется по data-action */
@@ -969,6 +1105,27 @@
 
     "select-day": (button) => {
       state.currentDate = button.dataset.date;
+      renderApp();
+    },
+
+    "save-plan": async () => {
+      // Автосохранение и так работает; кнопка отправляет запись сразу и подтверждает это
+      const date = state.currentDate;
+      clearTimeout(saveTimers[date]);
+      delete saveTimers[date];
+
+      // Пустые строки не сохраняем
+      const day = getDay(date);
+      day.plan = day.plan.filter((task) => task.text.trim());
+
+      const isSaved = await storage.saveDay(day);
+      showToast(isSaved ? "Задачи сохранены" : "Не удалось сохранить запись");
+      if (date === state.currentDate) renderApp();
+    },
+
+    "delete-plan-task": (button) => {
+      getDay().plan.splice(Number(button.dataset.index), 1);
+      saveDay(state.currentDate, { immediately: true });
       renderApp();
     },
 
@@ -1059,20 +1216,31 @@
     const nextDate = shiftDate(state.currentDate, 1);
     const nextDay = getDay(nextDate);
 
-    const alreadyThere = new Set(nextDay.tasks.map((task) => task.text));
-    const toCarry = day.tasks
-      .filter((task) => task.text.trim() && !task.done)
-      .map((task) => task.text.trim())
-      .filter((text) => !alreadyThere.has(text));
+    const unfinished = (list) =>
+      list.filter((task) => task.text.trim() && !task.done).map((task) => task.text.trim());
 
-    if (!toCarry.length) {
-      showToast("Всё закрыто — переносить нечего");
+    // «Мои задачи на сегодня» → в план следующего дня (в пределах лимита)
+    const planThere = new Set(nextDay.plan.map((task) => task.text.trim()));
+    const planRoom = Math.max(0, MAX_PLAN_TASKS - nextDay.plan.length);
+    const planCandidates = unfinished(day.plan).filter((text) => !planThere.has(text));
+    const planToCarry = planCandidates.slice(0, planRoom);
+
+    // «Остальное» → в «Остальное» следующего дня
+    const tasksThere = new Set(nextDay.tasks.map((task) => task.text));
+    const tasksToCarry = unfinished(day.tasks).filter((text) => !tasksThere.has(text));
+
+    const total = planToCarry.length + tasksToCarry.length;
+    if (!total) {
+      showToast(
+        planCandidates.length ? `Не больше ${MAX_PLAN_TASKS} задач на день` : "Всё закрыто — переносить нечего",
+      );
       return;
     }
 
-    nextDay.tasks.push(...toCarry.map((text) => ({ text, done: false })));
+    nextDay.plan.push(...planToCarry.map((text) => ({ text, done: false })));
+    nextDay.tasks.push(...tasksToCarry.map((text) => ({ text, done: false })));
     saveDay(nextDate, { immediately: true });
-    showToast(`Перенесено задач: ${toCarry.length}`);
+    showToast(`Перенесено задач: ${total}`);
   }
 
   /* ========================================================================
