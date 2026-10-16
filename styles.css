@@ -410,6 +410,7 @@ button {
 
 .input--textarea {
   min-height: 44px;
+  height: 100%;
   resize: vertical;
 }
 
@@ -463,7 +464,6 @@ button {
 }
 
 .button--dusk {
-  align-self: flex-start;
   padding: 10px 14px;
   background: var(--dusk);
   border: 0;

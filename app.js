@@ -169,7 +169,11 @@
     const lastDigit = n % 10;
     const lastTwoDigits = n % 100;
     if (lastDigit === 1 && lastTwoDigits !== 11) return one;
-    if (lastDigit >= 2 && lastDigit <= 4 && (lastTwoDigits < 12 || lastTwoDigits > 14)) {
+    if (
+      lastDigit >= 2 &&
+      lastDigit <= 4 &&
+      (lastTwoDigits < 12 || lastTwoDigits > 14)
+    ) {
       return few;
     }
     return many;
@@ -296,7 +300,11 @@
         } catch (parseError) {
           /* битая запись — покажем пустой день, при сохранении она перезапишется */
         }
-        const day = { ...createEmptyDay(row.date), ...(saved || {}), date: row.date };
+        const day = {
+          ...createEmptyDay(row.date),
+          ...(saved || {}),
+          date: row.date,
+        };
         day.plan = normalizePlan(day.plan);
         days[row.date] = day;
       });
@@ -339,7 +347,10 @@
         try {
           const rowId = taskRowIds[date];
           if (rowId) {
-            const { error } = await db().from(TASKS_TABLE).delete().eq("id", rowId);
+            const { error } = await db()
+              .from(TASKS_TABLE)
+              .delete()
+              .eq("id", rowId);
             if (error) throw error;
             delete taskRowIds[date];
           }
@@ -377,6 +388,7 @@
       wins: ["", "", ""],
       improvement: "",
       focusSessions: 0,
+      carriedOver: false, // незакрытые задачи прошлых дней уже перенесены в этот день
     };
   }
 
@@ -391,7 +403,8 @@
   }
 
   function getTarget(counterKey, defaultTarget) {
-    const saved = state.settings.targets?.[`${state.settings.role}:${counterKey}`];
+    const saved =
+      state.settings.targets?.[`${state.settings.role}:${counterKey}`];
     return saved ?? defaultTarget;
   }
 
@@ -476,8 +489,7 @@
 
   function renderApp() {
     if (!state.isLoaded) {
-      appElement.innerHTML =
-        '<p class="page__loading">Открываю ваш день…</p>';
+      appElement.innerHTML = '<p class="page__loading">Открываю ваш день…</p>';
       return;
     }
 
@@ -681,7 +693,9 @@
   }
 
   function renderTouches(day) {
-    const counters = getRole().counters.map((counter) => renderCounter(counter, day));
+    const counters = getRole().counters.map((counter) =>
+      renderCounter(counter, day),
+    );
 
     return `
       <section class="section section--day">
@@ -724,7 +738,6 @@
 
   function renderEvening(day) {
     const isToday = state.currentDate === getTodayKey();
-
     const wins = day.wins
       .map(
         (win, index) => `
@@ -776,7 +789,10 @@
     const progressElement = $(".score__ring-progress");
     if (valueElement) valueElement.textContent = score;
     if (progressElement) {
-      progressElement.setAttribute("stroke-dashoffset", RING_LENGTH * (1 - score / 100));
+      progressElement.setAttribute(
+        "stroke-dashoffset",
+        RING_LENGTH * (1 - score / 100),
+      );
     }
 
     const weekBar = $(".week__day--current .week__bar-fill");
@@ -809,7 +825,8 @@
       getPlanTask(day, index).text = el.value;
 
       const counter = $("#plan-count");
-      if (counter) counter.textContent = `${countPlanTasks(day.plan)}/${MAX_PLAN_TASKS}`;
+      if (counter)
+        counter.textContent = `${countPlanTasks(day.plan)}/${MAX_PLAN_TASKS}`;
     },
     improvement: (day, el) => (day.improvement = el.value),
     win: (day, el, index) => (day.wins[index] = el.value),
@@ -818,7 +835,8 @@
 
   /* Переключатели: сохраняем сразу и перерисовываем */
   const CHANGE_HANDLERS = {
-    "plan-done": (day, el, index) => (getPlanTask(day, index).done = el.checked),
+    "plan-done": (day, el, index) =>
+      (getPlanTask(day, index).done = el.checked),
     "task-done": (day, el, index) => (day.tasks[index].done = el.checked),
   };
 
@@ -896,8 +914,13 @@
     const task = getPlanTask(day, index);
 
     const merged =
-      input.value.slice(0, input.selectionStart) + pasted + input.value.slice(input.selectionEnd);
-    const texts = merged.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+      input.value.slice(0, input.selectionStart) +
+      pasted +
+      input.value.slice(input.selectionEnd);
+    const texts = merged
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean);
     if (!texts.length) return;
 
     const room = MAX_PLAN_TASKS - (day.plan.length - 1);
@@ -906,27 +929,23 @@
 
     const [first, ...rest] = added;
     task.text = first;
-    day.plan.splice(index + 1, 0, ...rest.map((text) => ({ text, done: false })));
+    day.plan.splice(
+      index + 1,
+      0,
+      ...rest.map((text) => ({ text, done: false })),
+    );
     saveDay();
     focusPlanTask(index + added.length - 1);
   });
 
   /* Нажатия на кнопки: действие определяется по data-action */
   const CLICK_ACTIONS = {
-    "shift-day": (button) => {
-      state.currentDate = shiftDate(state.currentDate, Number(button.dataset.offset));
-      renderApp();
-    },
+    "shift-day": (button) =>
+      showDay(shiftDate(state.currentDate, Number(button.dataset.offset))),
 
-    "go-today": () => {
-      state.currentDate = getTodayKey();
-      renderApp();
-    },
+    "go-today": () => showDay(getTodayKey()),
 
-    "select-day": (button) => {
-      state.currentDate = button.dataset.date;
-      renderApp();
-    },
+    "select-day": (button) => showDay(button.dataset.date),
 
     "save-plan": async () => {
       // Автосохранение и так работает; кнопка отправляет запись сразу и подтверждает это
@@ -998,6 +1017,79 @@
     CLICK_ACTIONS[button.dataset.action]?.(button);
   });
 
+  /** Открывает день. Сегодняшний день при первом открытии получает незакрытые задачи прошлых дней */
+  function showDay(dateKey) {
+    state.currentDate = dateKey;
+    if (dateKey === getTodayKey()) carryOverIntoToday();
+    renderApp();
+  }
+
+  /**
+   * Автоперенос: незакрытые задачи («Мои задачи» и «Остальное») из ближайшего
+   * предыдущего дня, где были задачи, попадают в сегодняшний день.
+   * Срабатывает один раз за день (флаг carriedOver хранится в записи дня),
+   * поэтому удалённая задача не вернётся. Прошлые дни не меняются.
+   */
+  function carryOverIntoToday() {
+    const todayKey = getTodayKey();
+    const today = getDay(todayKey);
+    if (today.carriedOver) return;
+
+    const hasTasks = (day) =>
+      [...day.plan, ...day.tasks].some((task) => task.text.trim());
+    const previousDate = Object.keys(state.days)
+      .filter((date) => date < todayKey && hasTasks(state.days[date]))
+      .sort()
+      .pop();
+
+    // Тексты незакрытых задач, которых ещё нет в целевом списке (и без повторов внутри)
+    const pickUnfinished = (fromList, toList, limit = Infinity) => {
+      const seen = new Set(toList.map((task) => task.text.trim()));
+      const picked = [];
+      fromList.forEach((task) => {
+        const text = task.text.trim();
+        if (!text || task.done || seen.has(text) || picked.length >= limit)
+          return;
+        seen.add(text);
+        picked.push(text);
+      });
+      return picked;
+    };
+
+    let total = 0;
+    if (previousDate) {
+      const previous = state.days[previousDate];
+
+      today.plan = today.plan.filter((task) => task.text.trim()); // пустые строки не нужны
+      const planTexts = pickUnfinished(
+        previous.plan,
+        today.plan,
+        MAX_PLAN_TASKS - today.plan.length,
+      );
+      const taskTexts = pickUnfinished(previous.tasks, today.tasks);
+
+      today.plan.push(...planTexts.map((text) => ({ text, done: false })));
+      today.tasks.push(...taskTexts.map((text) => ({ text, done: false })));
+      total = planTexts.length + taskTexts.length;
+
+      if (total) {
+        const fromDate = new Date(`${previousDate}T12:00`).toLocaleDateString(
+          "ru-RU",
+          {
+            day: "numeric",
+            month: "long",
+          },
+        );
+        showToast(
+          `Перенесено с ${fromDate}: ${total} ${plural(total, "задача", "задачи", "задач")}`,
+        );
+      }
+    }
+
+    today.carriedOver = true;
+    saveDay(todayKey, { immediately: true });
+  }
+
   /** Переносит незавершённые задачи на следующий день */
   function carryOverUnfinishedTasks() {
     const day = getDay();
@@ -1005,22 +1097,30 @@
     const nextDay = getDay(nextDate);
 
     const unfinished = (list) =>
-      list.filter((task) => task.text.trim() && !task.done).map((task) => task.text.trim());
+      list
+        .filter((task) => task.text.trim() && !task.done)
+        .map((task) => task.text.trim());
 
     // «Мои задачи на сегодня» → в план следующего дня (в пределах лимита)
     const planThere = new Set(nextDay.plan.map((task) => task.text.trim()));
     const planRoom = Math.max(0, MAX_PLAN_TASKS - nextDay.plan.length);
-    const planCandidates = unfinished(day.plan).filter((text) => !planThere.has(text));
+    const planCandidates = unfinished(day.plan).filter(
+      (text) => !planThere.has(text),
+    );
     const planToCarry = planCandidates.slice(0, planRoom);
 
     // «Остальное» → в «Остальное» следующего дня
     const tasksThere = new Set(nextDay.tasks.map((task) => task.text));
-    const tasksToCarry = unfinished(day.tasks).filter((text) => !tasksThere.has(text));
+    const tasksToCarry = unfinished(day.tasks).filter(
+      (text) => !tasksThere.has(text),
+    );
 
     const total = planToCarry.length + tasksToCarry.length;
     if (!total) {
       showToast(
-        planCandidates.length ? `Не больше ${MAX_PLAN_TASKS} задач на день` : "Всё закрыто — переносить нечего",
+        planCandidates.length
+          ? `Не больше ${MAX_PLAN_TASKS} задач на день`
+          : "Всё закрыто — переносить нечего",
       );
       return;
     }
@@ -1085,7 +1185,10 @@
   }
 
   function tickTimer() {
-    timer.secondsLeft = Math.max(0, Math.round((timer.endTime - Date.now()) / 1000));
+    timer.secondsLeft = Math.max(
+      0,
+      Math.round((timer.endTime - Date.now()) / 1000),
+    );
 
     const clock = $("#timer-clock");
     if (clock) clock.textContent = formatTimer(timer.secondsLeft);
@@ -1180,7 +1283,8 @@
     const targets = { ...(state.settings.targets || {}) };
     $$("[data-target]").forEach((input) => {
       const value = parseInt(input.value, 10);
-      if (!Number.isNaN(value)) targets[`${draftRole}:${input.dataset.target}`] = value;
+      if (!Number.isNaN(value))
+        targets[`${draftRole}:${input.dataset.target}`] = value;
     });
 
     state.settings = {
@@ -1284,6 +1388,7 @@
       delete state.settings.ritual; // остался от прежней версии
       state.days = savedDays;
       state.isLoaded = true;
+      carryOverIntoToday();
     } catch (error) {
       // Не рисуем пустой день: сохранение поверх него могло бы создать дубли
       console.error("Ошибка загрузки данных:", error);
@@ -1294,6 +1399,19 @@
 
     renderApp();
   }
+
+  /* Вкладка простояла открытой за полночь: при возврате на неё открываем новый «сегодня» */
+  let knownToday = getTodayKey();
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden || !state.isLoaded) return;
+
+    const today = getTodayKey();
+    if (today === knownToday) return;
+
+    const wasOnToday = state.currentDate === knownToday;
+    knownToday = today;
+    if (wasOnToday) showDay(today);
+  });
 
   init();
 })();
