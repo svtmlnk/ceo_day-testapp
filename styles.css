@@ -11,8 +11,7 @@
    3. Блоки: page, header, score, week
    4. Блок section (карточка части дня) и его вложенные блоки
    5. Блоки формы: field, input, checkbox, button
-   6. Блоки дня: quote, challenge, checklist, timer, counter,
-      schedule, tasks, review
+   6. Блоки дня: quote, plan, timer, counter, tasks, review
    7. Служебные блоки: footer, dialog, segmented, toast
    ========================================================================== */
 
@@ -367,10 +366,6 @@ button {
   text-align: right;
 }
 
-.section__empty-text {
-  margin: 0;
-  color: var(--muted);
-}
 
 
 /* ==========================================================================
@@ -418,20 +413,8 @@ button {
   resize: vertical;
 }
 
-.input--time {
-  padding: 8px 6px;
-  font-variant-numeric: tabular-nums;
-  font-size: 12px;
-  cursor: pointer;
-}
-
 .input--number {
   font-variant-numeric: tabular-nums;
-}
-
-.input--current {
-  background: var(--day-soft);
-  border-color: var(--day);
 }
 
 .input--done {
@@ -628,67 +611,6 @@ button {
   height: 22px;
 }
 
-/* challenge — вызов дня */
-.challenge {
-  display: flex;
-  align-items: flex-start;
-  gap: 10px;
-  padding: 10px 12px;
-  background: var(--surface);
-  border: 1px dashed var(--dawn);
-  border-radius: 12px;
-}
-
-.challenge__title {
-  padding-top: 2px;
-  font-size: 11px;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-  white-space: nowrap;
-  color: var(--dawn);
-}
-
-.challenge__label {
-  display: flex;
-  flex: 1;
-  align-items: flex-start;
-  gap: 10px;
-  cursor: pointer;
-}
-
-/* checklist — список с галочками (утренний ритуал) */
-.checklist {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  column-gap: 16px;
-  row-gap: 2px;
-}
-
-@media (max-width: 820px) {
-  .checklist {
-    grid-template-columns: 1fr;
-  }
-}
-
-.checklist__item {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 7px 4px;
-  border-radius: 8px;
-  cursor: pointer;
-}
-
-.checklist__item:hover {
-  background: var(--sunk);
-}
-
-.checklist__item--done .checklist__text {
-  color: var(--muted);
-  text-decoration: line-through;
-}
-
 /* timer — таймер фокус-сессий */
 .timer {
   display: flex;
@@ -827,53 +749,6 @@ button {
 .counter__button--plus {
   background: var(--day);
   color: #fff;
-}
-
-/* schedule — блоки времени */
-.schedule {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.schedule__block {
-  display: grid;
-  grid-template-columns: auto 1fr 30px;
-  align-items: center;
-  gap: 8px;
-}
-
-/* начало – конец блока */
-.schedule__time {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-}
-
-.schedule__time .input--time {
-  flex: none;
-  width: 78px;
-}
-
-.schedule__dash {
-  color: var(--muted);
-}
-
-/* на узком экране время — отдельной строкой над названием блока */
-@media (max-width: 560px) {
-  .schedule__block {
-    grid-template-columns: 1fr 30px;
-  }
-
-  .schedule__time {
-    grid-column: 1 / -1;
-  }
-}
-
-.schedule__actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
 }
 
 /* tasks + task — «Остальное» */
