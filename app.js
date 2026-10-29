@@ -101,7 +101,7 @@
   /* Доска стикеров. Хранится в таблице tasks отдельной строкой с датой BOARD_DATE
      (доска одна на пользователя и не привязана к дню) */
   const BOARD_DATE = "2000-01-01";
-  const STICKER_COLORS = ["gold", "pink", "green", "blue", "orange", "purple"];
+  const STICKER_COLORS = ["yellow", "pink", "green", "blue", "orange", "purple"];
   const STICKER_SIZE = 168; // размер нового стикера
   const STICKER_MIN = 110; // меньше — не помещаются кнопки и текст
   const STICKER_MAX = 520;
@@ -233,7 +233,7 @@
           y: clamp(Number(item?.y) || 0, 0, Math.max(0, BOARD_HEIGHT - h)),
           w,
           h,
-          color: STICKER_COLORS.includes(item?.color) ? item.color : "gold",
+          color: STICKER_COLORS.includes(item?.color) ? item.color : "yellow",
           text: String(item?.text ?? "").slice(0, MAX_STICKER_TEXT),
           z: Number(item?.z) || index + 1,
         };
@@ -418,7 +418,8 @@
      ====================================================================== */
 
   const state = {
-    settings: { role: DEFAULT_ROLE, targets: {} },
+    settings: { role: DEFAULT_ROLE, targets: {}, location: null },
+    weather: { status: "idle", data: null, message: "" },
     days: {}, // { "ГГГГ-ММ-ДД": day }
     board: { date: BOARD_DATE, stickers: [] }, // доска стикеров
     boardView: { x: 0, y: 0, zoom: 1 }, // сдвиг и масштаб доски; живёт только на странице
@@ -560,6 +561,7 @@
     const day = getDay();
 
     appElement.innerHTML = [
+      renderWeatherBlock(),
       renderHeader(day),
       renderWeek(),
       renderMorning(day),
@@ -573,6 +575,416 @@
     renderTimer();
 
     applyBoardView();
+  }
+
+  /* ---------- Погода ---------- */
+
+  // Open-Meteo: бесплатный сервис без ключа, разрешает запросы из браузера
+  const GEOCODING_URL = "https://geocoding-api.open-meteo.com/v1/search";
+  const FORECAST_URL = "https://api.open-meteo.com/v1/forecast";
+  const WEATHER_TIMEOUT_MS = 10000;
+  const MAX_LOCATION_LENGTH = 80;
+
+  // Коды погоды WMO → [значок, описание]
+  const WEATHER_CODES = {
+    0: ["☀️", "Ясно"],
+    1: ["🌤️", "Малооблачно"],
+    2: ["⛅", "Переменная облачность"],
+    3: ["☁️", "Пасмурно"],
+    45: ["🌫️", "Туман"],
+    48: ["🌫️", "Изморозь"],
+    51: ["🌦️", "Лёгкая морось"],
+    53: ["🌦️", "Морось"],
+    55: ["🌦️", "Сильная морось"],
+    56: ["🌧️", "Ледяная морось"],
+    57: ["🌧️", "Ледяная морось"],
+    61: ["🌧️", "Небольшой дождь"],
+    63: ["🌧️", "Дождь"],
+    65: ["🌧️", "Сильный дождь"],
+    66: ["🌧️", "Ледяной дождь"],
+    67: ["🌧️", "Ледяной дождь"],
+    71: ["🌨️", "Небольшой снег"],
+    73: ["🌨️", "Снег"],
+    75: ["❄️", "Сильный снег"],
+    77: ["🌨️", "Снежная крупа"],
+    80: ["🌦️", "Ливень"],
+    81: ["🌧️", "Сильный ливень"],
+    82: ["⛈️", "Очень сильный ливень"],
+    85: ["🌨️", "Снегопад"],
+    86: ["❄️", "Сильный снегопад"],
+    95: ["⛈️", "Гроза"],
+    96: ["⛈️", "Гроза с градом"],
+    99: ["⛈️", "Гроза с градом"],
+  };
+
+  let weatherRequestId = 0;
+
+  function describeWeather(code) {
+    return WEATHER_CODES[code] || ["🌡️", "Погода"];
+  }
+
+  function formatTemperature(value) {
+    if (typeof value !== "number" || Number.isNaN(value)) return "—";
+    const rounded = Math.round(value);
+    const sign = rounded > 0 ? "+" : rounded < 0 ? "−" : "";
+    return `${sign}${Math.abs(rounded)}°`;
+  }
+
+  async function fetchJson(url, timeout = WEATHER_TIMEOUT_MS) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeout);
+    try {
+      const response = await fetch(url, { signal: controller.signal });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      return await response.json();
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  /** Название места → координаты. null, если такого места не нашли */
+  async function geocodeLocation(query) {
+    const params = new URLSearchParams({
+      name: query,
+      count: "1",
+      language: "ru",
+      format: "json",
+    });
+    const result = (await fetchJson(`${GEOCODING_URL}?${params}`)).results?.[0];
+    if (!result) return null;
+
+    const title = [result.name, result.admin1, result.country]
+      .filter((part, index, list) => part && list.indexOf(part) === index)
+      .join(", ");
+    return {
+      name: title,
+      lat: result.latitude,
+      lon: result.longitude,
+      timezone: result.timezone || "",
+    };
+  }
+
+  /* Прогноз берём у нескольких бесплатных сервисов подряд: если один недоступен
+     (например, заблокирован у провайдера), пробуем следующий. Все ответы приводим
+     к одному виду: { current: {...}, daily: {...} } */
+  const MET_NO_URL = "https://api.met.no/weatherapi/locationforecast/2.0/compact";
+  const WTTR_URL = "https://wttr.in/";
+  const PROVIDER_TIMEOUT_MS = 6000;
+
+  // Коды погоды сервиса MET Norway (symbol_code) → код WMO
+  function metSymbolToCode(symbol = "") {
+    const name = symbol.replace(/_(day|night|polartwilight)$/, "");
+    if (name.includes("thunder")) return 95;
+    if (name.startsWith("heavysnow")) return 75;
+    if (name.startsWith("lightsnow")) return 71;
+    if (name.includes("snow")) return 73;
+    if (name.includes("sleet")) return 67;
+    if (name.startsWith("heavyrain")) return 65;
+    if (name.startsWith("lightrain")) return 61;
+    if (name.includes("rain")) return 63;
+    if (name === "fog") return 45;
+    if (name === "clearsky") return 0;
+    if (name === "fair") return 1;
+    if (name === "partlycloudy") return 2;
+    return 3;
+  }
+
+  // Коды погоды wttr.in (WorldWeatherOnline) → код WMO
+  function wwoToCode(code) {
+    const value = Number(code);
+    if ([113].includes(value)) return 0;
+    if ([116].includes(value)) return 2;
+    if ([119, 122].includes(value)) return 3;
+    if ([143, 248, 260].includes(value)) return 45;
+    if ([200, 386, 389, 392, 395].includes(value)) return 95;
+    if ([176, 263, 266, 293, 296, 353].includes(value)) return 61;
+    if ([299, 302, 305, 356].includes(value)) return 63;
+    if ([308, 359].includes(value)) return 65;
+    if ([179, 227, 323, 326, 368].includes(value)) return 71;
+    if ([230, 329, 332, 335, 338, 371, 350, 374, 377, 362, 365].includes(value)) return 73;
+    if ([182, 185, 281, 284, 311, 314, 317, 320].includes(value)) return 67;
+    return 3;
+  }
+
+  async function forecastFromOpenMeteo({ lat, lon }) {
+    const params = new URLSearchParams({
+      latitude: String(lat),
+      longitude: String(lon),
+      current: "temperature_2m,apparent_temperature,weather_code,wind_speed_10m",
+      daily:
+        "weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max",
+      wind_speed_unit: "ms",
+      timezone: "auto",
+      forecast_days: "4",
+    });
+    return fetchJson(`${FORECAST_URL}?${params}`, PROVIDER_TIMEOUT_MS);
+  }
+
+  async function forecastFromMetNo({ lat, lon, timezone }) {
+    const params = new URLSearchParams({
+      lat: lat.toFixed(4),
+      lon: lon.toFixed(4),
+    });
+    const series = (await fetchJson(`${MET_NO_URL}?${params}`, PROVIDER_TIMEOUT_MS))
+      .properties?.timeseries;
+    if (!series?.length) throw new Error("MET Norway: пустой ответ");
+
+    const zone = timezone || undefined; // нет часового пояса — берём пояс браузера
+    const dayOf = (iso) =>
+      new Intl.DateTimeFormat("en-CA", { timeZone: zone }).format(new Date(iso));
+    const hourOf = (iso) =>
+      Number(
+        new Intl.DateTimeFormat("en-GB", { timeZone: zone, hour: "2-digit", hourCycle: "h23" })
+          .format(new Date(iso)),
+      );
+
+    const now = series[0].data;
+    const byDay = new Map();
+    for (const item of series) {
+      const details = item.data?.instant?.details;
+      if (!details) continue;
+      const key = dayOf(item.time);
+      if (!byDay.has(key)) byDay.set(key, { temps: [], code: null, bestHourGap: 99 });
+      const entry = byDay.get(key);
+      entry.temps.push(details.air_temperature);
+
+      const symbol =
+        item.data.next_6_hours?.summary?.symbol_code ||
+        item.data.next_1_hours?.summary?.symbol_code;
+      const gap = Math.abs(hourOf(item.time) - 12);
+      if (symbol && gap < entry.bestHourGap) {
+        entry.code = metSymbolToCode(symbol);
+        entry.bestHourGap = gap;
+      }
+    }
+
+    const days = [...byDay.entries()].slice(0, 4);
+    return {
+      current: {
+        temperature_2m: now.instant.details.air_temperature,
+        apparent_temperature: null,
+        weather_code: metSymbolToCode(
+          now.next_1_hours?.summary?.symbol_code || now.next_6_hours?.summary?.symbol_code,
+        ),
+        wind_speed_10m: now.instant.details.wind_speed,
+      },
+      daily: {
+        time: days.map(([date]) => date),
+        weather_code: days.map(([, entry]) => entry.code ?? 3),
+        temperature_2m_max: days.map(([, entry]) => Math.max(...entry.temps)),
+        temperature_2m_min: days.map(([, entry]) => Math.min(...entry.temps)),
+        precipitation_probability_max: days.map(() => null),
+      },
+    };
+  }
+
+  async function forecastFromWttr({ lat, lon }) {
+    const url = `${WTTR_URL}${lat.toFixed(3)},${lon.toFixed(3)}?format=j1`;
+    const json = await fetchJson(url, PROVIDER_TIMEOUT_MS);
+    const current = json.current_condition?.[0];
+    const days = json.weather;
+    if (!current || !days?.length) throw new Error("wttr.in: пустой ответ");
+
+    const chanceOfRain = (day) =>
+      Math.max(
+        0,
+        ...(day.hourly || []).map((hour) =>
+          Math.max(Number(hour.chanceofrain) || 0, Number(hour.chanceofsnow) || 0),
+        ),
+      );
+    const noon = (day) =>
+      day.hourly?.find((hour) => hour.time === "1200") || day.hourly?.[4] || {};
+
+    return {
+      current: {
+        temperature_2m: Number(current.temp_C),
+        apparent_temperature: Number(current.FeelsLikeC),
+        weather_code: wwoToCode(current.weatherCode),
+        wind_speed_10m: Number(current.windspeedKmph) / 3.6,
+      },
+      daily: {
+        time: days.map((day) => day.date),
+        weather_code: days.map((day) => wwoToCode(noon(day).weatherCode)),
+        temperature_2m_max: days.map((day) => Number(day.maxtempC)),
+        temperature_2m_min: days.map((day) => Number(day.mintempC)),
+        precipitation_probability_max: days.map(chanceOfRain),
+      },
+    };
+  }
+
+  const FORECAST_PROVIDERS = [forecastFromOpenMeteo, forecastFromMetNo, forecastFromWttr];
+  const PROVIDER_KEY = "day-merchant:weather-provider";
+
+  // Запоминаем сработавший сервис в браузере, чтобы не ждать недоступный при каждом открытии
+  try {
+    const index = FORECAST_PROVIDERS.findIndex(
+      (provider) => provider.name === localStorage.getItem(PROVIDER_KEY),
+    );
+    if (index > 0) FORECAST_PROVIDERS.unshift(...FORECAST_PROVIDERS.splice(index, 1));
+  } catch (error) {
+    /* localStorage недоступен — порядок по умолчанию */
+  }
+
+  async function fetchForecast(location) {
+    let lastError = null;
+    for (const provider of [...FORECAST_PROVIDERS]) {
+      try {
+        const forecast = await provider(location);
+        if (!Array.isArray(forecast.daily?.time) || !forecast.current) {
+          throw new Error("Неполный ответ сервиса погоды");
+        }
+        // Сервис, который сработал, в следующий раз опрашиваем первым
+        FORECAST_PROVIDERS.splice(FORECAST_PROVIDERS.indexOf(provider), 1);
+        FORECAST_PROVIDERS.unshift(provider);
+        try {
+          localStorage.setItem(PROVIDER_KEY, provider.name);
+        } catch (error) {
+          /* не критично */
+        }
+        return forecast;
+      } catch (error) {
+        lastError = error;
+        console.warn(`Погода: ${provider.name} недоступен —`, error);
+      }
+    }
+    throw lastError || new Error("Сервисы погоды недоступны");
+  }
+
+  function setWeather(patch) {
+    state.weather = { ...state.weather, ...patch };
+    const result = $("#weather-result");
+    if (result) result.innerHTML = renderWeatherResult();
+  }
+
+  /** Подгружает прогноз для сохранённого места (при открытии приложения) */
+  async function loadWeather() {
+    const location = state.settings.location;
+    if (!location) return;
+
+    const requestId = ++weatherRequestId;
+    setWeather({ status: "loading", message: "" });
+    try {
+      const data = await fetchForecast(location);
+      if (requestId !== weatherRequestId) return; // пришёл устаревший ответ
+      setWeather({ status: "ready", data });
+    } catch (error) {
+      if (requestId !== weatherRequestId) return;
+      console.error("Ошибка загрузки погоды:", error);
+      setWeather({
+        status: "error",
+        message: "Не удалось получить прогноз. Проверьте интернет и попробуйте ещё раз.",
+      });
+    }
+  }
+
+  /** Пользователь ввёл место: ищем его, запоминаем и показываем прогноз */
+  async function submitLocation(rawQuery) {
+    const query = rawQuery.trim().slice(0, MAX_LOCATION_LENGTH);
+
+    if (!query) {
+      // пустое поле — убираем место
+      weatherRequestId++;
+      state.settings.location = null;
+      saveSettings();
+      setWeather({ status: "idle", data: null, message: "" });
+      return;
+    }
+
+    const requestId = ++weatherRequestId;
+    setWeather({ status: "loading", message: "" });
+    try {
+      const location = await geocodeLocation(query);
+      if (requestId !== weatherRequestId) return;
+      if (!location) {
+        setWeather({
+          status: "error",
+          message: `Не нашли «${query}». Проверьте название или попробуйте написать иначе.`,
+        });
+        return;
+      }
+
+      const data = await fetchForecast(location);
+      if (requestId !== weatherRequestId) return;
+
+      state.settings.location = location;
+      saveSettings();
+      const input = $("#weather-input");
+      if (input) input.value = location.name;
+      setWeather({ status: "ready", data });
+    } catch (error) {
+      if (requestId !== weatherRequestId) return;
+      console.error("Ошибка загрузки погоды:", error);
+      setWeather({
+        status: "error",
+        message: "Не удалось получить прогноз. Проверьте интернет и попробуйте ещё раз.",
+      });
+    }
+  }
+
+  function renderWeatherResult() {
+    const { status, data, message } = state.weather;
+
+    if (status === "loading") {
+      return '<p class="weather__note">Загружаю прогноз…</p>';
+    }
+    if (status === "error") {
+      return `<p class="weather__note weather__note--error">${escapeHtml(message)}</p>`;
+    }
+    if (status !== "ready" || !data?.current || !data.daily) {
+      return '<p class="weather__note">Впишите город — покажу погоду на ближайшие дни.</p>';
+    }
+
+    const [icon, label] = describeWeather(data.current.weather_code);
+    const feelsLike =
+      typeof data.current.apparent_temperature === "number"
+        ? `ощущается как ${formatTemperature(data.current.apparent_temperature)} · `
+        : "";
+    const wind = Math.round(data.current.wind_speed_10m);
+
+    const days = data.daily.time
+      .slice(1, 4)
+      .map((date, offset) => {
+        const index = offset + 1;
+        const [dayIcon, dayLabel] = describeWeather(data.daily.weather_code[index]);
+        const weekday = new Date(`${date}T12:00`).toLocaleDateString("ru-RU", {
+          weekday: "short",
+          day: "numeric",
+        });
+        const rain = data.daily.precipitation_probability_max?.[index];
+        return `
+          <li class="weather__day" title="${escapeHtml(dayLabel)}">
+            <span class="weather__day-name">${escapeHtml(weekday)}</span>
+            <span class="weather__day-icon" aria-hidden="true">${dayIcon}</span>
+            <span class="weather__day-temp">${formatTemperature(data.daily.temperature_2m_max[index])}
+              <span class="weather__day-min">${formatTemperature(data.daily.temperature_2m_min[index])}</span></span>
+            ${typeof rain === "number" ? `<span class="weather__day-rain">осадки ${rain}%</span>` : ""}
+          </li>`;
+      })
+      .join("");
+
+    return `
+      <div class="weather__now">
+        <span class="weather__icon" aria-hidden="true">${icon}</span>
+        <div>
+          <div class="weather__temp">${formatTemperature(data.current.temperature_2m)}</div>
+          <div class="weather__label">${escapeHtml(label)}</div>
+          <div class="weather__meta">${feelsLike}ветер ${wind} м/с</div>
+        </div>
+      </div>
+      <ul class="weather__days">${days}</ul>`;
+  }
+
+  function renderWeatherBlock() {
+    const location = state.settings.location?.name || "";
+    return `
+      <section class="weather" aria-label="Прогноз погоды">
+        <form class="weather__form" data-form="weather" autocomplete="off">
+          <label class="weather__label-text" for="weather-input">Погода</label>
+          <input class="input weather__input" id="weather-input" name="location" type="text" maxlength="${MAX_LOCATION_LENGTH}" value="${escapeHtml(location)}" placeholder="Введите город, например Москва" enterkeyhint="search">
+          <button class="button" type="submit">Показать</button>
+        </form>
+        <div class="weather__result" id="weather-result">${renderWeatherResult()}</div>
+      </section>`;
   }
 
   /* ---------- Шапка ---------- */
@@ -838,6 +1250,7 @@
         <div class="board" id="board">
           <div class="board__canvas" style="width:${BOARD_WIDTH}px;height:${BOARD_HEIGHT}px">
             ${stickers.map(renderSticker).join("")}
+            ${stickers.length ? "" : '<p class="board__empty">Доска пуста. Нажмите «+ Стикер» и запишите мысль.</p>'}
           </div>
         </div>
       </section>`;
@@ -967,6 +1380,12 @@
     handler(getDay(), el, Number(el.dataset.index));
     saveDay();
     refreshScore();
+  });
+
+  appElement.addEventListener("submit", (event) => {
+    if (event.target.dataset?.form !== "weather") return;
+    event.preventDefault();
+    submitLocation(new FormData(event.target).get("location") || "");
   });
 
   appElement.addEventListener("change", (event) => {
@@ -1157,7 +1576,7 @@
   const nextStickerZ = () =>
     state.board.stickers.reduce((max, item) => Math.max(max, item.z), 0) + 1;
 
-  let lastStickerColor = "gold"; // новый стикер берёт цвет последнего изменённого
+  let lastStickerColor = "yellow"; // новый стикер берёт цвет последнего изменённого
 
   function addSticker() {
     const { stickers } = state.board;
@@ -1804,6 +2223,7 @@
     }
 
     renderApp();
+    loadWeather();
   }
 
   window.addEventListener("resize", applyBoardView);
