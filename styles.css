@@ -764,6 +764,234 @@ button {
   gap: 10px;
 }
 
+/* board + sticker — доска стикеров в стиле Miro */
+.board__toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.board__count {
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+}
+
+/* окно без полос прокрутки: холст двигают мышью и приближают кнопками */
+.board {
+  height: 460px;
+  overflow: hidden;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  cursor: grab;
+  touch-action: none; /* палец на доске двигает доску, а не страницу */
+  user-select: none;
+}
+
+.board--panning {
+  cursor: grabbing;
+}
+
+.board__canvas {
+  position: relative;
+  background-image: radial-gradient(var(--line) 1.3px, transparent 1.3px);
+  background-size: 22px 22px;
+  transform-origin: 0 0;
+  will-change: transform;
+}
+
+.board__zoom {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+}
+
+.board__zoom-value {
+  min-width: 62px;
+  font-variant-numeric: tabular-nums;
+}
+
+.board__empty {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: min(100%, 360px);
+  margin: 0;
+  padding: 18px;
+  color: var(--muted);
+  font-size: 14px;
+}
+
+.sticker {
+  --sticker-bg: #fff091;
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  width: 168px;
+  height: 168px;
+  background: var(--sticker-bg);
+  border-radius: 3px 3px 14px 3px;
+  box-shadow:
+    0 1px 2px rgba(0, 0, 0, 0.12),
+    0 8px 16px rgba(0, 0, 0, 0.16);
+  color: #2a2418; /* стикеры всегда светлые, поэтому текст тёмный и в тёмной теме */
+}
+
+.sticker[data-color="pink"] { --sticker-bg: #ffb8cf; }
+.sticker[data-color="green"] { --sticker-bg: #b9ecb0; }
+.sticker[data-color="blue"] { --sticker-bg: #a9d6ff; }
+.sticker[data-color="orange"] { --sticker-bg: #ffc891; }
+.sticker[data-color="purple"] { --sticker-bg: #d6c4ff; }
+
+/* невидимые зоны по краям и углам: за них стикер растягивают */
+.sticker__resize {
+  position: absolute;
+  z-index: 2;
+  touch-action: none;
+}
+
+.sticker__resize--n,
+.sticker__resize--s {
+  left: 12px;
+  right: 12px;
+  height: 8px;
+  cursor: ns-resize;
+}
+
+.sticker__resize--e,
+.sticker__resize--w {
+  top: 12px;
+  bottom: 12px;
+  width: 8px;
+  cursor: ew-resize;
+}
+
+.sticker__resize--n { top: -4px; }
+.sticker__resize--s { bottom: -4px; }
+.sticker__resize--e { right: -4px; }
+.sticker__resize--w { left: -4px; }
+
+.sticker__resize--ne,
+.sticker__resize--nw,
+.sticker__resize--se,
+.sticker__resize--sw {
+  width: 12px;
+  height: 12px;
+}
+
+.sticker__resize--ne { top: -6px; right: -6px; cursor: nesw-resize; }
+.sticker__resize--sw { bottom: -6px; left: -6px; cursor: nesw-resize; }
+.sticker__resize--nw { top: -6px; left: -6px; cursor: nwse-resize; }
+.sticker__resize--se { right: -6px; bottom: -6px; cursor: nwse-resize; }
+
+/* на сенсорных экранах зоны шире — пальцем в тонкий край не попасть */
+@media (pointer: coarse) {
+  .sticker__resize--n,
+  .sticker__resize--s {
+    height: 18px;
+  }
+
+  .sticker__resize--e,
+  .sticker__resize--w {
+    width: 18px;
+  }
+
+  .sticker__resize--n { top: -9px; }
+  .sticker__resize--s { bottom: -9px; }
+  .sticker__resize--e { right: -9px; }
+  .sticker__resize--w { left: -9px; }
+
+  .sticker__resize--ne,
+  .sticker__resize--nw,
+  .sticker__resize--se,
+  .sticker__resize--sw {
+    width: 26px;
+    height: 26px;
+  }
+
+  .sticker__resize--ne { top: -12px; right: -12px; }
+  .sticker__resize--sw { bottom: -12px; left: -12px; }
+  .sticker__resize--nw { top: -12px; left: -12px; }
+  .sticker__resize--se { right: -12px; bottom: -12px; }
+
+  /* кнопки на полосе отодвинуты от угловой зоны растягивания */
+  .sticker__bar {
+    padding-right: 14px;
+  }
+}
+
+.sticker--dragging {
+  box-shadow:
+    0 2px 4px rgba(0, 0, 0, 0.14),
+    0 16px 28px rgba(0, 0, 0, 0.28);
+  cursor: grabbing;
+}
+
+/* полоса, за которую двигают; touch-action: none — чтобы палец двигал стикер, а не прокручивал доску */
+.sticker__bar {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  height: 30px;
+  padding: 0 4px 0 8px;
+  background: rgba(0, 0, 0, 0.07);
+  border-radius: 3px 3px 0 0;
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+}
+
+.sticker__grip {
+  flex: 1;
+  font-size: 13px;
+  letter-spacing: 1px;
+  opacity: 0.45;
+}
+
+.sticker__button {
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  background: none;
+  border: 0;
+  border-radius: 6px;
+  color: inherit;
+  font-size: 16px;
+  opacity: 0.6;
+}
+
+.sticker__button:hover {
+  background: rgba(0, 0, 0, 0.1);
+  opacity: 1;
+}
+
+.sticker__text {
+  flex: 1;
+  width: 100%;
+  min-height: 0;
+  padding: 8px 10px 10px;
+  background: none;
+  border: 0;
+  color: inherit;
+  cursor: text;
+  font-size: 16px; /* меньше 16px — iOS приближает страницу при вводе */
+  font-weight: 600;
+  line-height: 1.35;
+  resize: none;
+  user-select: text;
+}
+
+.sticker__text::placeholder {
+  color: rgba(42, 36, 24, 0.45);
+  font-weight: 500;
+}
+
+.sticker__text:focus {
+  outline: none;
+}
+
 /* review — вечерний разбор */
 .review__columns {
   display: grid;

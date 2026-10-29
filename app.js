@@ -98,6 +98,22 @@
   const DEFAULT_ROLE = "manager";
   const MAX_PLAN_TASKS = 50; // задач в поле «Мои задачи на сегодня»
 
+  /* Доска стикеров. Хранится в таблице tasks отдельной строкой с датой BOARD_DATE
+     (доска одна на пользователя и не привязана к дню) */
+  const BOARD_DATE = "2000-01-01";
+  const STICKER_COLORS = ["gold", "pink", "green", "blue", "orange", "purple"];
+  const STICKER_SIZE = 168; // размер нового стикера
+  const STICKER_MIN = 110; // меньше — не помещаются кнопки и текст
+  const STICKER_MAX = 520;
+  const RESIZE_DIRS = ["n", "s", "e", "w", "ne", "nw", "se", "sw"]; // края и углы, за которые тянут
+  const BOARD_WIDTH = 1200;
+  const BOARD_HEIGHT = 700;
+  const MAX_STICKERS = 60;
+  const MAX_STICKER_TEXT = 300;
+  const ZOOM_MIN = 0.4;
+  const ZOOM_MAX = 2;
+  const ZOOM_STEP = 1.25;
+
   /* Из чего складываются очки дня (в сумме 100) */
   const SCORE_WEIGHTS = { touches: 67, review: 33 };
   const STREAK_MIN_SCORE = 50;
@@ -201,6 +217,30 @@
     }));
   }
 
+  const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
+
+  /** Приводит данные доски из базы к виду { date, stickers: [{ id, x, y, w, h, color, text, z }] } */
+  function normalizeBoard(saved) {
+    const list = Array.isArray(saved?.stickers) ? saved.stickers : [];
+    return {
+      date: BOARD_DATE,
+      stickers: list.slice(0, MAX_STICKERS).map((item, index) => {
+        const w = clamp(Number(item?.w) || STICKER_SIZE, STICKER_MIN, STICKER_MAX);
+        const h = clamp(Number(item?.h) || STICKER_SIZE, STICKER_MIN, STICKER_MAX);
+        return {
+          id: String(item?.id ?? `s${index}`),
+          x: clamp(Number(item?.x) || 0, 0, Math.max(0, BOARD_WIDTH - w)),
+          y: clamp(Number(item?.y) || 0, 0, Math.max(0, BOARD_HEIGHT - h)),
+          w,
+          h,
+          color: STICKER_COLORS.includes(item?.color) ? item.color : "gold",
+          text: String(item?.text ?? "").slice(0, MAX_STICKER_TEXT),
+          z: Number(item?.z) || index + 1,
+        };
+      }),
+    };
+  }
+
   function formatTimer(totalSeconds) {
     const minutes = String(Math.floor(totalSeconds / 60)).padStart(2, "0");
     const seconds = String(totalSeconds % 60).padStart(2, "0");
@@ -222,7 +262,7 @@
 
      Таблица tasks: id (int8), user_id (int8 → users.id), date (date),
      fulldata (text). Один день = одна строка; весь объект дня лежит
-     в fulldata как JSON.
+     в fulldata как JSON. Доска стикеров — ещё одна строка с датой BOARD_DATE.
      ====================================================================== */
 
   const currentUser = window.Auth.getSession(); // null — идёт переход на страницу входа
@@ -291,6 +331,7 @@
       if (error) throw error;
 
       const days = {};
+      let board = normalizeBoard(null);
       rows.forEach((row) => {
         taskRowIds[row.date] = row.id;
 
@@ -300,6 +341,10 @@
         } catch (parseError) {
           /* битая запись — покажем пустой день, при сохранении она перезапишется */
         }
+        if (row.date === BOARD_DATE) {
+          board = normalizeBoard(saved); // это доска стикеров, а не день
+          return;
+        }
         const day = {
           ...createEmptyDay(row.date),
           ...(saved || {}),
@@ -308,7 +353,7 @@
         day.plan = normalizePlan(day.plan);
         days[row.date] = day;
       });
-      return days;
+      return { days, board };
     },
 
     /** POST (новый день) или PUT (день уже есть в базе). Возвращает true/false */
@@ -375,6 +420,8 @@
   const state = {
     settings: { role: DEFAULT_ROLE, targets: {} },
     days: {}, // { "ГГГГ-ММ-ДД": day }
+    board: { date: BOARD_DATE, stickers: [] }, // доска стикеров
+    boardView: { x: 0, y: 0, zoom: 1 }, // сдвиг и масштаб доски; живёт только на странице
     currentDate: getTodayKey(),
     isLoaded: false,
   };
@@ -430,11 +477,28 @@
     if (!isSaved) showToast("Настройки не сохранены");
   }
 
+  /* Доска стикеров сохраняется так же: с задержкой при вводе, сразу при действиях */
+  let boardTimer = null;
+
+  function saveBoard({ immediately = false } = {}) {
+    clearTimeout(boardTimer);
+
+    const persist = async () => {
+      boardTimer = null;
+      const isSaved = await storage.saveDay(state.board);
+      if (!isSaved) showToast("Не удалось сохранить стикеры");
+    };
+
+    if (immediately) persist();
+    else boardTimer = setTimeout(persist, SAVE_DELAY_MS);
+  }
+
   /* Не теряем введённое, если вкладку закрыли раньше срока задержки */
   window.addEventListener("pagehide", () => {
     Object.keys(saveTimers).forEach((date) =>
       saveDay(date, { immediately: true }),
     );
+    if (boardTimer) saveBoard({ immediately: true });
   });
 
   /* ========================================================================
@@ -500,12 +564,15 @@
       renderWeek(),
       renderMorning(day),
       renderTasks(day),
+      renderBoard(),
       `<div class="grid grid--two">${renderFocus(day)}${renderTouches(day)}</div>`,
       renderEvening(day),
       renderFooter(),
     ].join("");
 
     renderTimer();
+
+    applyBoardView();
   }
 
   /* ---------- Шапка ---------- */
@@ -734,6 +801,48 @@
       </section>`;
   }
 
+  /* ---------- Стикеры ---------- */
+
+  function renderSticker(sticker) {
+    return `
+        <div class="sticker" data-sticker="${sticker.id}" data-color="${sticker.color}" style="left:${sticker.x}px;top:${sticker.y}px;width:${sticker.w}px;height:${sticker.h}px;z-index:${sticker.z}">
+          <div class="sticker__bar" data-handle="${sticker.id}" title="Перетащите за эту полосу">
+            <span class="sticker__grip" aria-hidden="true">⋮⋮</span>
+            <button class="sticker__button" type="button" data-action="cycle-sticker-color" data-id="${sticker.id}" aria-label="Сменить цвет">●</button>
+            <button class="sticker__button" type="button" data-action="delete-sticker" data-id="${sticker.id}" aria-label="Удалить стикер">×</button>
+          </div>
+          <textarea class="sticker__text" id="sticker-text-${sticker.id}" data-field="sticker-text" data-id="${sticker.id}" maxlength="${MAX_STICKER_TEXT}" placeholder="Мысль, идея, напоминание…" aria-label="Текст стикера">${escapeHtml(sticker.text)}</textarea>
+          ${RESIZE_DIRS.map((dir) => `<span class="sticker__resize sticker__resize--${dir}" data-resize="${dir}" data-id="${sticker.id}"></span>`).join("")}
+        </div>`;
+  }
+
+  function renderBoard() {
+    const { stickers } = state.board;
+
+    return `
+      <section class="section section--day">
+        <div class="section__header">
+          <span class="section__badge">Доска</span>
+          <h2 class="section__title">Стикеры</h2>
+          <span class="section__hint">Фон — двигать доску, полоса — стикер</span>
+        </div>
+        <div class="board__toolbar">
+          <button class="button button--primary" type="button" data-action="add-sticker">+ Стикер</button>
+          <span class="board__count">${stickers.length}/${MAX_STICKERS}</span>
+          <div class="board__zoom">
+            <button class="button" type="button" data-action="zoom-out" aria-label="Отдалить">−</button>
+            <button class="button board__zoom-value" type="button" data-action="zoom-reset" id="board-zoom" title="Сбросить масштаб и положение">100%</button>
+            <button class="button" type="button" data-action="zoom-in" aria-label="Приблизить">+</button>
+          </div>
+        </div>
+        <div class="board" id="board">
+          <div class="board__canvas" style="width:${BOARD_WIDTH}px;height:${BOARD_HEIGHT}px">
+            ${stickers.map(renderSticker).join("")}
+          </div>
+        </div>
+      </section>`;
+  }
+
   /* ---------- Вечерний разбор ---------- */
 
   function renderEvening(day) {
@@ -842,6 +951,16 @@
 
   appElement.addEventListener("input", (event) => {
     const el = event.target;
+
+    if (el.dataset.field === "sticker-text") {
+      const sticker = findSticker(el.dataset.id);
+      if (sticker) {
+        sticker.text = el.value;
+        saveBoard();
+      }
+      return;
+    }
+
     const handler = INPUT_HANDLERS[el.dataset.field];
     if (!handler) return;
 
@@ -996,6 +1115,21 @@
       renderApp();
     },
 
+    "add-sticker": addSticker,
+
+    "zoom-in": () => zoomBoard(ZOOM_STEP),
+
+    "zoom-out": () => zoomBoard(1 / ZOOM_STEP),
+
+    "zoom-reset": () => {
+      state.boardView = { x: 0, y: 0, zoom: 1 };
+      applyBoardView();
+    },
+
+    "delete-sticker": (button) => deleteSticker(button.dataset.id),
+
+    "cycle-sticker-color": (button) => cycleStickerColor(button.dataset.id),
+
     "carry-over": carryOverUnfinishedTasks,
 
     "open-settings": openSettings,
@@ -1016,6 +1150,276 @@
     if (!button) return;
     CLICK_ACTIONS[button.dataset.action]?.(button);
   });
+
+  /* ---------- Стикеры: добавление, цвет, удаление, перетаскивание ---------- */
+
+  const findSticker = (id) => state.board.stickers.find((item) => item.id === id);
+  const nextStickerZ = () =>
+    state.board.stickers.reduce((max, item) => Math.max(max, item.z), 0) + 1;
+
+  let lastStickerColor = "gold"; // новый стикер берёт цвет последнего изменённого
+
+  function addSticker() {
+    const { stickers } = state.board;
+    if (stickers.length >= MAX_STICKERS) {
+      showToast(`Не больше ${MAX_STICKERS} стикеров`);
+      return;
+    }
+
+    // Новый стикер появляется в видимой части доски, каждый следующий чуть сдвинут
+    const { x: viewX, y: viewY, zoom } = state.boardView;
+    const offset = (stickers.length % 6) * 26;
+    const sticker = {
+      id: Math.random().toString(36).slice(2, 10),
+      x: clamp((20 - viewX) / zoom + offset, 0, BOARD_WIDTH - STICKER_SIZE),
+      y: clamp((20 - viewY) / zoom + offset, 0, BOARD_HEIGHT - STICKER_SIZE),
+      w: STICKER_SIZE,
+      h: STICKER_SIZE,
+      color: lastStickerColor,
+      text: "",
+      z: nextStickerZ(),
+    };
+
+    stickers.push(sticker);
+    saveBoard({ immediately: true });
+    renderApp();
+    document.getElementById(`sticker-text-${sticker.id}`)?.focus();
+  }
+
+  function cycleStickerColor(id) {
+    const sticker = findSticker(id);
+    if (!sticker) return;
+
+    const next =
+      STICKER_COLORS[(STICKER_COLORS.indexOf(sticker.color) + 1) % STICKER_COLORS.length];
+    sticker.color = next;
+    lastStickerColor = next;
+    $(`[data-sticker="${id}"]`)?.setAttribute("data-color", next); // без перерисовки — не сбиваем ввод
+    saveBoard({ immediately: true });
+  }
+
+  function deleteSticker(id) {
+    const sticker = findSticker(id);
+    if (!sticker) return;
+    if (sticker.text.trim() && !window.confirm("Удалить стикер вместе с текстом?")) return;
+
+    state.board.stickers = state.board.stickers.filter((item) => item.id !== id);
+    saveBoard({ immediately: true });
+    renderApp();
+  }
+
+  /* ---------- Масштаб и сдвиг доски ---------- */
+
+  /** Не даёт увести холст так, чтобы за его краем осталась пустота */
+  function clampBoardView(view, viewport) {
+    const fit = (offset, canvasSize, viewportSize) => {
+      const scaled = canvasSize * view.zoom;
+      if (scaled <= viewportSize) return (viewportSize - scaled) / 2; // холст целиком виден — по центру
+      return clamp(offset, viewportSize - scaled, 0);
+    };
+    view.x = fit(view.x, BOARD_WIDTH, viewport.width);
+    view.y = fit(view.y, BOARD_HEIGHT, viewport.height);
+  }
+
+  /** Применяет масштаб и сдвиг к холсту и подписи «100%» */
+  function applyBoardView() {
+    const board = $("#board");
+    const canvas = $(".board__canvas");
+    if (!board || !canvas) return;
+
+    const view = state.boardView;
+    clampBoardView(view, board.getBoundingClientRect());
+    canvas.style.transform = `translate(${view.x}px, ${view.y}px) scale(${view.zoom})`;
+
+    const label = $("#board-zoom");
+    if (label) label.textContent = `${Math.round(view.zoom * 100)}%`;
+  }
+
+  /** Меняет масштаб вокруг точки доски (по умолчанию — её центра) */
+  function zoomBoard(factor, originX, originY) {
+    const board = $("#board");
+    if (!board) return;
+
+    const rect = board.getBoundingClientRect();
+    const view = state.boardView;
+    const cx = originX ?? rect.width / 2;
+    const cy = originY ?? rect.height / 2;
+    const zoom = clamp(view.zoom * factor, ZOOM_MIN, ZOOM_MAX);
+    const ratio = zoom / view.zoom;
+
+    view.x = cx - (cx - view.x) * ratio;
+    view.y = cy - (cy - view.y) * ratio;
+    view.zoom = zoom;
+    applyBoardView();
+  }
+
+  /* Колесо мыши с Ctrl (и щипок на тачпаде) — масштаб вокруг курсора */
+  appElement.addEventListener(
+    "wheel",
+    (event) => {
+      const board = event.target.closest?.("#board");
+      if (!board || !(event.ctrlKey || event.metaKey)) return;
+
+      event.preventDefault();
+      const rect = board.getBoundingClientRect();
+      zoomBoard(
+        event.deltaY < 0 ? ZOOM_STEP : 1 / ZOOM_STEP,
+        event.clientX - rect.left,
+        event.clientY - rect.top,
+      );
+    },
+    { passive: false },
+  );
+
+  /* Сдвиг доски: зажать левую кнопку (или палец) на пустом месте и тянуть */
+  let pan = null;
+
+  /* Изменение размера: тянем за любой край или угол стикера */
+  let resize = null;
+
+  /* Перетаскивание за верхнюю полосу — мышью, пальцем и пером (Pointer Events) */
+  let drag = null;
+
+  appElement.addEventListener("pointerdown", (event) => {
+    const board = event.target.closest("#board");
+    if (board && !event.target.closest(".sticker") && event.button <= 0) {
+      board.setPointerCapture(event.pointerId);
+      board.classList.add("board--panning");
+      pan = {
+        board,
+        pointerId: event.pointerId,
+        startX: event.clientX,
+        startY: event.clientY,
+        originX: state.boardView.x,
+        originY: state.boardView.y,
+      };
+      return;
+    }
+
+    const grip = event.target.closest("[data-resize]");
+    if (grip && event.button <= 0) {
+      const sticker = findSticker(grip.dataset.id);
+      const element = grip.closest(".sticker");
+      if (!sticker || !element) return;
+
+      sticker.z = nextStickerZ();
+      element.style.zIndex = sticker.z;
+      element.classList.add("sticker--dragging");
+      grip.setPointerCapture(event.pointerId);
+
+      resize = {
+        sticker,
+        element,
+        dir: grip.dataset.resize,
+        pointerId: event.pointerId,
+        startX: event.clientX,
+        startY: event.clientY,
+        origin: { x: sticker.x, y: sticker.y, w: sticker.w, h: sticker.h },
+      };
+      return;
+    }
+
+    const handle = event.target.closest("[data-handle]");
+    if (!handle || event.target.closest("button") || event.button > 0) return;
+
+    const sticker = findSticker(handle.dataset.handle);
+    const element = handle.closest(".sticker");
+    if (!sticker || !element) return;
+
+    sticker.z = nextStickerZ(); // поднимаем стикер поверх остальных
+    element.style.zIndex = sticker.z;
+    element.classList.add("sticker--dragging");
+    handle.setPointerCapture(event.pointerId);
+
+    drag = {
+      sticker,
+      element,
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      originX: sticker.x,
+      originY: sticker.y,
+    };
+  });
+
+  appElement.addEventListener("pointermove", (event) => {
+    if (pan && event.pointerId === pan.pointerId) {
+      state.boardView.x = pan.originX + event.clientX - pan.startX;
+      state.boardView.y = pan.originY + event.clientY - pan.startY;
+      applyBoardView();
+      return;
+    }
+
+    if (resize && event.pointerId === resize.pointerId) {
+      const { sticker, element, dir, origin } = resize;
+      const { zoom } = state.boardView;
+      const dx = (event.clientX - resize.startX) / zoom;
+      const dy = (event.clientY - resize.startY) / zoom;
+
+      // Тянем нужные стороны; противоположная остаётся на месте, размер ограничен и доской
+      if (dir.includes("e")) {
+        sticker.w = clamp(origin.w + dx, STICKER_MIN, Math.min(STICKER_MAX, BOARD_WIDTH - origin.x));
+      }
+      if (dir.includes("w")) {
+        const right = origin.x + origin.w;
+        sticker.w = clamp(origin.w - dx, STICKER_MIN, Math.min(STICKER_MAX, right));
+        sticker.x = right - sticker.w;
+      }
+      if (dir.includes("s")) {
+        sticker.h = clamp(origin.h + dy, STICKER_MIN, Math.min(STICKER_MAX, BOARD_HEIGHT - origin.y));
+      }
+      if (dir.includes("n")) {
+        const bottom = origin.y + origin.h;
+        sticker.h = clamp(origin.h - dy, STICKER_MIN, Math.min(STICKER_MAX, bottom));
+        sticker.y = bottom - sticker.h;
+      }
+
+      element.style.left = `${sticker.x}px`;
+      element.style.top = `${sticker.y}px`;
+      element.style.width = `${sticker.w}px`;
+      element.style.height = `${sticker.h}px`;
+      return;
+    }
+
+    if (!drag || event.pointerId !== drag.pointerId) return;
+
+    // Сдвиг на экране делим на масштаб — получаем сдвиг на самой доске
+    const { zoom } = state.boardView;
+    drag.sticker.x = clamp(drag.originX + (event.clientX - drag.startX) / zoom, 0, BOARD_WIDTH - drag.sticker.w);
+    drag.sticker.y = clamp(drag.originY + (event.clientY - drag.startY) / zoom, 0, BOARD_HEIGHT - drag.sticker.h);
+    drag.element.style.left = `${drag.sticker.x}px`;
+    drag.element.style.top = `${drag.sticker.y}px`;
+  });
+
+  function endDrag(event) {
+    if (resize && event.pointerId === resize.pointerId) {
+      resize.element.classList.remove("sticker--dragging");
+      // Размеры храним целыми числами
+      Object.assign(resize.sticker, {
+        x: Math.round(resize.sticker.x),
+        y: Math.round(resize.sticker.y),
+        w: Math.round(resize.sticker.w),
+        h: Math.round(resize.sticker.h),
+      });
+      resize = null;
+      saveBoard({ immediately: true });
+      return;
+    }
+
+    if (pan && event.pointerId === pan.pointerId) {
+      pan.board.classList.remove("board--panning");
+      pan = null;
+      return;
+    }
+
+    if (!drag || event.pointerId !== drag.pointerId) return;
+    drag.element.classList.remove("sticker--dragging");
+    drag = null;
+    saveBoard({ immediately: true });
+  }
+
+  appElement.addEventListener("pointerup", endDrag);
+  appElement.addEventListener("pointercancel", endDrag);
 
   /** Открывает день. Сегодняшний день при первом открытии получает незакрытые задачи прошлых дней */
   function showDay(dateKey) {
@@ -1352,6 +1756,7 @@
     Object.keys(saveTimers).forEach((date) =>
       saveDay(date, { immediately: true }),
     );
+    if (boardTimer) saveBoard({ immediately: true });
     await storage.flush();
     window.Auth.logout();
   }
@@ -1386,7 +1791,8 @@
 
       state.settings = { ...state.settings, ...(savedSettings || {}) };
       delete state.settings.ritual; // остался от прежней версии
-      state.days = savedDays;
+      state.days = savedDays.days;
+      state.board = savedDays.board;
       state.isLoaded = true;
       carryOverIntoToday();
     } catch (error) {
@@ -1399,6 +1805,8 @@
 
     renderApp();
   }
+
+  window.addEventListener("resize", applyBoardView);
 
   /* Вкладка простояла открытой за полночь: при возврате на неё открываем новый «сегодня» */
   let knownToday = getTodayKey();
