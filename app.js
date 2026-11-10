@@ -96,7 +96,6 @@
   };
 
   const DEFAULT_ROLE = "manager";
-  const MAX_PLAN_TASKS = 50; // задач в поле «Мои задачи на сегодня»
 
   /* Доска стикеров. Хранится в таблице tasks отдельной строкой с датой BOARD_DATE
      (доска одна на пользователя и не привязана к дню) */
@@ -114,8 +113,8 @@
   const ZOOM_MAX = 2;
   const ZOOM_STEP = 1.25;
 
-  /* Из чего складываются очки дня (в сумме 100) */
-  const SCORE_WEIGHTS = { touches: 67, review: 33 };
+  /* Из чего складываются очки дня */
+  const SCORE_WEIGHTS = { touches: 100 };
   const STREAK_MIN_SCORE = 50;
 
   const FOCUS_SECONDS = 25 * 60;
@@ -128,11 +127,6 @@
   const RING_LENGTH = 2 * Math.PI * RING_RADIUS;
 
   const WEEKDAY_NAMES = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"];
-  const WIN_PLACEHOLDERS = [
-    "Даже маленькая считается",
-    "Что получилось лучше, чем вчера",
-    "За что себя похвалить",
-  ];
 
   /* ========================================================================
      2. Утилиты
@@ -170,7 +164,7 @@
     return toDateKey(date);
   }
 
-  /** Порядковый номер дня — нужен, чтобы цитата и вызов менялись каждый день */
+  /** Порядковый номер дня — нужен, чтобы цитата менялась каждый день */
   function getDayNumber(dateKey) {
     return Math.floor(new Date(`${dateKey}T12:00`).getTime() / 86400000);
   }
@@ -193,28 +187,6 @@
       return few;
     }
     return many;
-  }
-
-  /** Сколько задач в списке: считаются строки с текстом */
-  function countPlanTasks(plan) {
-    return plan.filter((task) => task.text.trim()).length;
-  }
-
-  /** Приводит план дня к списку [{ text, done }]. Старый формат — текст, по задаче в строке */
-  function normalizePlan(plan) {
-    if (typeof plan === "string") {
-      return plan
-        .split("\n")
-        .map((line) => line.trim())
-        .filter(Boolean)
-        .slice(0, MAX_PLAN_TASKS)
-        .map((text) => ({ text, done: false }));
-    }
-    if (!Array.isArray(plan)) return [];
-    return plan.map((task) => ({
-      text: String(task?.text ?? ""),
-      done: Boolean(task?.done),
-    }));
   }
 
   const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
@@ -350,7 +322,8 @@
           ...(saved || {}),
           date: row.date,
         };
-        day.plan = normalizePlan(day.plan);
+        day.tasks = normalizeTaskList(day.tasks);
+        day.eveningTasks = normalizeTaskList(day.eveningTasks);
         days[row.date] = day;
       });
       return { days, board };
@@ -418,7 +391,13 @@
      ====================================================================== */
 
   const state = {
-    settings: { role: DEFAULT_ROLE, targets: {}, location: null },
+    settings: {
+      role: DEFAULT_ROLE,
+      targets: {},
+      location: null,
+      focusCollapsed: false,   // свёрнут ли раздел «Фокус»
+      touchesCollapsed: false, // свёрнут ли раздел «Касания»
+    },
     weather: { status: "idle", data: null, message: "" },
     days: {}, // { "ГГГГ-ММ-ДД": day }
     board: { date: BOARD_DATE, stickers: [] }, // доска стикеров
@@ -430,14 +409,21 @@
   function createEmptyDay(date) {
     return {
       date,
-      plan: [], // «Мои задачи на сегодня» — [{ text, done }]
-      counts: {}, // { ключ счётчика: число касаний }
-      tasks: [], // [{ text, done }]
-      wins: ["", "", ""],
-      improvement: "",
+      counts: {},        // { ключ счётчика: число касаний }
+      tasks: [],         // «День» — [{ text, done }]
+      eveningTasks: [],  // «Вечер» — [{ text, done }]
       focusSessions: 0,
       carriedOver: false, // незакрытые задачи прошлых дней уже перенесены в этот день
     };
+  }
+
+  /** Приводит список задач к виду [{ text, done }] */
+  function normalizeTaskList(list) {
+    if (!Array.isArray(list)) return [];
+    return list.map((task) => ({
+      text: String(task?.text ?? ""),
+      done: Boolean(task?.done),
+    }));
   }
 
   /** День по дате; если записи ещё нет — создаётся пустая в памяти */
@@ -515,18 +501,9 @@
     return sum / counters.length;
   }
 
-  /* Разбор дня: три победы дают 75%, пункт «что сделаю иначе» — 25% */
-  function getReviewProgress(day) {
-    const filledWins = day.wins.filter((win) => win.trim()).length;
-    return (filledWins / 3) * 0.75 + (day.improvement.trim() ? 0.25 : 0);
-  }
-
   function getScore(day) {
     if (!day) return 0;
-    return Math.round(
-      getTouchesProgress(day) * SCORE_WEIGHTS.touches +
-        getReviewProgress(day) * SCORE_WEIGHTS.review,
-    );
+    return Math.round(getTouchesProgress(day) * SCORE_WEIGHTS.touches);
   }
 
   /** Сколько дней подряд набрано не меньше STREAK_MIN_SCORE очков */
@@ -564,11 +541,12 @@
       renderWeatherBlock(),
       renderHeader(day),
       renderWeek(),
-      renderMorning(day),
+      renderMorning(),
       renderTasks(day),
+      renderEveningTasks(day),
       renderBoard(),
       `<div class="grid grid--two">${renderFocus(day)}${renderTouches(day)}</div>`,
-      renderEvening(day),
+      renderEvening(),
       renderFooter(),
     ].join("");
 
@@ -906,7 +884,7 @@
       const data = await fetchForecast(location);
       if (requestId !== weatherRequestId) return;
 
-      state.settings.location = location;
+      state.settings.location = location; // запоминаем место пользователя
       saveSettings();
       const input = $("#weather-input");
       if (input) input.value = location.name;
@@ -1028,7 +1006,7 @@
     );
     const score = getScore(day);
     const streak = getStreak();
-    const scoreHint = `Очки дня: касания ${SCORE_WEIGHTS.touches}, вечерний разбор ${SCORE_WEIGHTS.review}`;
+    const scoreHint = `Очки дня: касания ${SCORE_WEIGHTS.touches}`;
 
     return `
       <header class="header">
@@ -1088,7 +1066,7 @@
 
   /* ---------- Утро ---------- */
 
-  function renderMorning(day) {
+  function renderMorning() {
     const [quoteText, quoteAuthor] = pickForDate(QUOTES, state.currentDate);
     return `
       <section class="section section--morning">
@@ -1102,49 +1080,40 @@
           <blockquote class="quote__text">«${escapeHtml(quoteText)}»</blockquote>
           <figcaption class="quote__author">— ${escapeHtml(quoteAuthor)}</figcaption>
         </figure>
-
-        ${renderPlan(day)}
       </section>`;
   }
 
-  /* ---------- Мои задачи на сегодня ---------- */
+  /* ---------- Заголовок секции (сворачиваемый) ---------- */
 
-  function renderPlan(day) {
-    const isToday = state.currentDate === getTodayKey();
-
-    // Пока задач нет, показываем одну пустую строку — она появится в данных при вводе
-    const rows = day.plan.length ? day.plan : [{ text: "", done: false }];
-
+  /* Заголовок секции. Если передан toggleKey — клик по заголовку
+     сворачивает/разворачивает содержимое секции до одной строки */
+  function renderSectionHeader({ badge, title, hint = "", collapsed = false, toggleKey = "" }) {
+    const toggle = toggleKey
+      ? ` role="button" tabindex="0" data-action="toggle-section" data-section="${toggleKey}"
+          aria-expanded="${!collapsed}"`
+      : "";
     return `
-        <div class="plan">
-          <div class="plan__header">
-            <span class="plan__title">Мои задачи на ${isToday ? "сегодня" : "этот день"}</span>
-            <span class="plan__count" id="plan-count">${countPlanTasks(day.plan)}/${MAX_PLAN_TASKS}</span>
-          </div>
-          <div class="plan__list">${rows.map(renderPlanTask).join("")}</div>
-          <button class="button button--dawn" type="button" data-action="save-plan">Сохранить задачи</button>
-        </div>`;
-  }
-
-  function renderPlanTask(task, index) {
-    return `
-          <div class="plan__row">
-            <input class="input input--plain${task.done ? " input--done" : ""}" id="plan-text-${index}" data-field="plan-text" data-index="${index}" value="${escapeHtml(task.text)}" placeholder="${index === 0 ? "Впишите задачу и нажмите Enter" : "Задача"}" aria-label="Задача ${index + 1}">
-            <input class="checkbox" type="checkbox" data-field="plan-done" data-index="${index}" ${task.done ? "checked" : ""} aria-label="Выполнена">
-            <button class="delete-button" type="button" data-action="delete-plan-task" data-index="${index}" aria-label="Удалить задачу">×</button>
-          </div>`;
+      <div class="section__header"${toggle}>
+        <span class="section__badge">${badge}</span>
+        <h2 class="section__title">${title}</h2>
+        ${hint ? `<span class="section__hint">${hint}</span>` : ""}
+        ${toggleKey ? '<span class="section__chevron" aria-hidden="true"></span>' : ""}
+      </div>`;
   }
 
   /* ---------- Фокус (только таймер) ---------- */
 
   function renderFocus() {
+    const collapsed = Boolean(state.settings.focusCollapsed);
     return `
-      <section class="section section--day">
-        <div class="section__header">
-          <span class="section__badge">День</span>
-          <h2 class="section__title">Фокус</h2>
-          <span class="section__hint">Работа короткими сессиями</span>
-        </div>
+      <section class="section section--day${collapsed ? " section--collapsed" : ""}">
+        ${renderSectionHeader({
+          badge: "День",
+          title: "Фокус",
+          hint: "Работа короткими сессиями",
+          collapsed,
+          toggleKey: "focus",
+        })}
         <div class="timer" id="timer"></div>
       </section>`;
   }
@@ -1172,43 +1141,60 @@
   }
 
   function renderTouches(day) {
+    const collapsed = Boolean(state.settings.touchesCollapsed);
     const counters = getRole().counters.map((counter) =>
       renderCounter(counter, day),
     );
+    const reached = getRole().counters.filter(
+      ([key, , defaultTarget]) =>
+        (day.counts[key] || 0) >= getTarget(key, defaultTarget),
+    ).length;
 
     return `
-      <section class="section section--day">
-        <div class="section__header">
-          <span class="section__badge">День</span>
-          <h2 class="section__title">Касания</h2>
-          <span class="section__hint">Активность, которую вы контролируете</span>
-        </div>
+      <section class="section section--day${collapsed ? " section--collapsed" : ""}">
+        ${renderSectionHeader({
+          badge: "День",
+          title: "Касания",
+          hint: collapsed
+            ? `Выполнено целей: ${reached}/${getRole().counters.length}`
+            : "Активность, которую вы контролируете",
+          collapsed,
+          toggleKey: "touches",
+        })}
         <div class="counters">${counters.join("")}</div>
       </section>`;
   }
 
-  /* ---------- Остальные задачи ---------- */
+  /* ---------- Задачи («День» и «Вечер») ---------- */
 
-  function renderTask(task, index) {
+  function renderTask(task, index, list) {
     return `
       <div class="task">
-        <input class="checkbox" type="checkbox" data-field="task-done" data-index="${index}" ${task.done ? "checked" : ""} aria-label="Готово">
-        <input class="input${task.done ? " input--done" : ""}" id="task-${index}" data-field="task-text" data-index="${index}" value="${escapeHtml(task.text)}" placeholder="Задача">
-        <button class="delete-button" data-action="delete-task" data-index="${index}" aria-label="Удалить">×</button>
+        <input class="checkbox" type="checkbox" data-field="task-done" data-list="${list}" data-index="${index}" ${task.done ? "checked" : ""} aria-label="Готово">
+        <input class="input${task.done ? " input--done" : ""}" id="${list}-${index}" data-field="task-text" data-list="${list}" data-index="${index}" value="${escapeHtml(task.text)}" placeholder="Задача">
+        <button class="delete-button" data-action="delete-task" data-list="${list}" data-index="${index}" aria-label="Удалить">×</button>
       </div>`;
   }
 
   function renderTasks(day) {
     return `
       <section class="section section--day">
-        <div class="section__header">
-          <span class="section__badge">День</span>
-          <h2 class="section__title">Остальное</h2>
-          <span class="section__hint">Мелочи — после главного</span>
-        </div>
+        ${renderSectionHeader({ badge: "День", title: "Задачи" })}
         <div class="tasks">
-          ${day.tasks.map(renderTask).join("")}
-          <button class="add-button" data-action="add-task">+ Задача</button>
+          ${day.tasks.map((task, index) => renderTask(task, index, "tasks")).join("")}
+          <button class="add-button" data-action="add-task" data-list="tasks">+ Задача</button>
+        </div>
+      </section>`;
+  }
+
+  /* Копия раздела «День» для вечерних задач */
+  function renderEveningTasks(day) {
+    return `
+      <section class="section section--evening">
+        ${renderSectionHeader({ badge: "Вечер", title: "Задачи" })}
+        <div class="tasks">
+          ${day.eveningTasks.map((task, index) => renderTask(task, index, "eveningTasks")).join("")}
+          <button class="add-button" data-action="add-task" data-list="eveningTasks">+ Задача</button>
         </div>
       </section>`;
   }
@@ -1256,37 +1242,13 @@
       </section>`;
   }
 
-  /* ---------- Вечерний разбор ---------- */
+  /* ---------- Вечер: перенос незакрытых задач ---------- */
 
-  function renderEvening(day) {
+  function renderEvening() {
     const isToday = state.currentDate === getTodayKey();
-    const wins = day.wins
-      .map(
-        (win, index) => `
-          <input class="input" id="win-${index}" data-field="win" data-index="${index}" value="${escapeHtml(win)}" placeholder="${WIN_PLACEHOLDERS[index]}">`,
-      )
-      .join("");
-
     return `
       <section class="section section--evening">
-        <div class="section__header">
-          <span class="section__badge">Вечер</span>
-          <h2 class="section__title">Разбор дня</h2>
-          <span class="section__hint">5 минут, чтобы завтра было легче</span>
-        </div>
-
-        <div class="review__columns">
-          <div class="field">
-            <span class="field__label">Три победы сегодня</span>
-            <div class="review__wins">${wins}</div>
-          </div>
-
-          <div class="field">
-            <label class="field__label" for="improvement">Что сделаю иначе завтра</label>
-            <textarea class="input input--textarea" id="improvement" data-field="improvement" rows="3">${escapeHtml(day.improvement)}</textarea>
-          </div>
-        </div>
-
+        ${renderSectionHeader({ badge: "Вечер", title: "Перенос задач" })}
         <button class="button button--dusk" data-action="carry-over">
           Перенести незакрытое на ${isToday ? "завтра" : "следующий день"}
         </button>
@@ -1325,41 +1287,25 @@
      7. Обработчики событий
      ====================================================================== */
 
-  /** Задача плана по индексу; пустая строка-заготовка создаётся в данных при первом вводе */
-  function getPlanTask(day, index) {
-    if (!day.plan[index]) day.plan[index] = { text: "", done: false };
-    return day.plan[index];
-  }
-
-  /** Перерисовывает страницу и ставит курсор в строку плана */
-  function focusPlanTask(index, caret = "end") {
-    renderApp();
-    const input = document.getElementById(`plan-text-${index}`);
-    if (!input) return;
-    input.focus();
-    const position = caret === "start" ? 0 : input.value.length;
-    input.setSelectionRange(position, position);
+  /* Список задач по data-list: «tasks» — день, «eveningTasks» — вечер */
+  function getTaskList(day, list) {
+    return list === "eveningTasks" ? day.eveningTasks : day.tasks;
   }
 
   /* Ввод текста: обновляем день и сохраняем с задержкой, без перерисовки */
   const INPUT_HANDLERS = {
-    "plan-text": (day, el, index) => {
-      getPlanTask(day, index).text = el.value;
-
-      const counter = $("#plan-count");
-      if (counter)
-        counter.textContent = `${countPlanTasks(day.plan)}/${MAX_PLAN_TASKS}`;
+    "task-text": (day, el) => {
+      const list = getTaskList(day, el.dataset.list);
+      list[Number(el.dataset.index)].text = el.value;
     },
-    improvement: (day, el) => (day.improvement = el.value),
-    win: (day, el, index) => (day.wins[index] = el.value),
-    "task-text": (day, el, index) => (day.tasks[index].text = el.value),
   };
 
   /* Переключатели: сохраняем сразу и перерисовываем */
   const CHANGE_HANDLERS = {
-    "plan-done": (day, el, index) =>
-      (getPlanTask(day, index).done = el.checked),
-    "task-done": (day, el, index) => (day.tasks[index].done = el.checked),
+    "task-done": (day, el) => {
+      const list = getTaskList(day, el.dataset.list);
+      list[Number(el.dataset.index)].done = el.checked;
+    },
   };
 
   appElement.addEventListener("input", (event) => {
@@ -1377,7 +1323,7 @@
     const handler = INPUT_HANDLERS[el.dataset.field];
     if (!handler) return;
 
-    handler(getDay(), el, Number(el.dataset.index));
+    handler(getDay(), el);
     saveDay();
     refreshScore();
   });
@@ -1393,87 +1339,24 @@
     const handler = CHANGE_HANDLERS[el.dataset.field];
     if (!handler) return;
 
-    handler(getDay(), el, Number(el.dataset.index));
+    handler(getDay(), el);
     saveDay(state.currentDate, { immediately: true });
     renderApp();
   });
 
   /* Enter в поле задачи создаёт новую задачу под ней */
   appElement.addEventListener("keydown", (event) => {
-    const field = event.target.dataset?.field;
-    const index = Number(event.target.dataset?.index);
-
-    if (field === "plan-text") {
-      const day = getDay();
-
-      if (event.key === "Enter") {
-        event.preventDefault();
-        if (day.plan.length >= MAX_PLAN_TASKS) {
-          showToast(`Не больше ${MAX_PLAN_TASKS} задач`);
-          return;
-        }
-        getPlanTask(day, index);
-        day.plan.splice(index + 1, 0, { text: "", done: false });
-        saveDay();
-        focusPlanTask(index + 1);
-      }
-
-      // Backspace в пустой строке удаляет её и возвращает курсор выше
-      if (event.key === "Backspace" && !event.target.value && index > 0) {
-        event.preventDefault();
-        day.plan.splice(index, 1);
-        saveDay();
-        focusPlanTask(index - 1);
-      }
+    if (event.key !== "Enter" || event.target.dataset?.field !== "task-text")
       return;
-    }
-
-    if (event.key !== "Enter" || field !== "task-text") return;
 
     event.preventDefault();
-    const nextIndex = index + 1;
-    getDay().tasks.splice(nextIndex, 0, { text: "", done: false });
+    const { list, index } = event.target.dataset;
+    const day = getDay();
+    const nextIndex = Number(index) + 1;
+    getTaskList(day, list).splice(nextIndex, 0, { text: "", done: false });
     saveDay();
     renderApp();
-    document.getElementById(`task-${nextIndex}`)?.focus();
-  });
-
-  /* Вставка нескольких строк раскладывается по отдельным задачам */
-  appElement.addEventListener("paste", (event) => {
-    const input = event.target;
-    if (input.dataset?.field !== "plan-text") return;
-
-    const pasted = event.clipboardData?.getData("text") || "";
-    if (!/[\r\n]/.test(pasted)) return; // одна строка — обычная вставка
-
-    event.preventDefault();
-    const day = getDay();
-    const index = Number(input.dataset.index);
-    const task = getPlanTask(day, index);
-
-    const merged =
-      input.value.slice(0, input.selectionStart) +
-      pasted +
-      input.value.slice(input.selectionEnd);
-    const texts = merged
-      .split(/\r?\n/)
-      .map((line) => line.trim())
-      .filter(Boolean);
-    if (!texts.length) return;
-
-    const room = MAX_PLAN_TASKS - (day.plan.length - 1);
-    if (texts.length > room) showToast(`Не больше ${MAX_PLAN_TASKS} задач`);
-    const added = texts.slice(0, Math.max(1, room));
-
-    const [first, ...rest] = added;
-    task.text = first;
-    day.plan.splice(
-      index + 1,
-      0,
-      ...rest.map((text) => ({ text, done: false })),
-    );
-    saveDay();
-    focusPlanTask(index + added.length - 1);
+    document.getElementById(`${list}-${nextIndex}`)?.focus();
   });
 
   /* Нажатия на кнопки: действие определяется по data-action */
@@ -1485,24 +1368,11 @@
 
     "select-day": (button) => showDay(button.dataset.date),
 
-    "save-plan": async () => {
-      // Автосохранение и так работает; кнопка отправляет запись сразу и подтверждает это
-      const date = state.currentDate;
-      clearTimeout(saveTimers[date]);
-      delete saveTimers[date];
-
-      // Пустые строки не сохраняем
-      const day = getDay(date);
-      day.plan = day.plan.filter((task) => task.text.trim());
-
-      const isSaved = await storage.saveDay(day);
-      showToast(isSaved ? "Задачи сохранены" : "Не удалось сохранить запись");
-      if (date === state.currentDate) renderApp();
-    },
-
-    "delete-plan-task": (button) => {
-      getDay().plan.splice(Number(button.dataset.index), 1);
-      saveDay(state.currentDate, { immediately: true });
+    "toggle-section": (button) => {
+      const key =
+        button.dataset.section === "focus" ? "focusCollapsed" : "touchesCollapsed";
+      state.settings = { ...state.settings, [key]: !state.settings[key] };
+      saveSettings();
       renderApp();
     },
 
@@ -1520,16 +1390,18 @@
       renderApp();
     },
 
-    "add-task": () => {
+    "add-task": (button) => {
       const day = getDay();
-      day.tasks.push({ text: "", done: false });
+      const list = getTaskList(day, button.dataset.list);
+      list.push({ text: "", done: false });
       saveDay();
       renderApp();
-      document.getElementById(`task-${day.tasks.length - 1}`)?.focus();
+      document.getElementById(`${button.dataset.list}-${list.length - 1}`)?.focus();
     },
 
     "delete-task": (button) => {
-      getDay().tasks.splice(Number(button.dataset.index), 1);
+      const day = getDay();
+      getTaskList(day, button.dataset.list).splice(Number(button.dataset.index), 1);
       saveDay(state.currentDate, { immediately: true });
       renderApp();
     },
@@ -1848,7 +1720,7 @@
   }
 
   /**
-   * Автоперенос: незакрытые задачи («Мои задачи» и «Остальное») из ближайшего
+   * Автоперенос: незакрытые задачи («День» и «Вечер») из ближайшего
    * предыдущего дня, где были задачи, попадают в сегодняшний день.
    * Срабатывает один раз за день (флаг carriedOver хранится в записи дня),
    * поэтому удалённая задача не вернётся. Прошлые дни не меняются.
@@ -1859,20 +1731,19 @@
     if (today.carriedOver) return;
 
     const hasTasks = (day) =>
-      [...day.plan, ...day.tasks].some((task) => task.text.trim());
+      [...day.tasks, ...day.eveningTasks].some((task) => task.text.trim());
     const previousDate = Object.keys(state.days)
       .filter((date) => date < todayKey && hasTasks(state.days[date]))
       .sort()
       .pop();
 
     // Тексты незакрытых задач, которых ещё нет в целевом списке (и без повторов внутри)
-    const pickUnfinished = (fromList, toList, limit = Infinity) => {
+    const pickUnfinished = (fromList, toList) => {
       const seen = new Set(toList.map((task) => task.text.trim()));
       const picked = [];
       fromList.forEach((task) => {
         const text = task.text.trim();
-        if (!text || task.done || seen.has(text) || picked.length >= limit)
-          return;
+        if (!text || task.done || seen.has(text)) return;
         seen.add(text);
         picked.push(text);
       });
@@ -1883,17 +1754,12 @@
     if (previousDate) {
       const previous = state.days[previousDate];
 
-      today.plan = today.plan.filter((task) => task.text.trim()); // пустые строки не нужны
-      const planTexts = pickUnfinished(
-        previous.plan,
-        today.plan,
-        MAX_PLAN_TASKS - today.plan.length,
-      );
-      const taskTexts = pickUnfinished(previous.tasks, today.tasks);
+      const dayTexts = pickUnfinished(previous.tasks, today.tasks);
+      const eveningTexts = pickUnfinished(previous.eveningTasks, today.eveningTasks);
 
-      today.plan.push(...planTexts.map((text) => ({ text, done: false })));
-      today.tasks.push(...taskTexts.map((text) => ({ text, done: false })));
-      total = planTexts.length + taskTexts.length;
+      today.tasks.push(...dayTexts.map((text) => ({ text, done: false })));
+      today.eveningTasks.push(...eveningTexts.map((text) => ({ text, done: false })));
+      total = dayTexts.length + eveningTexts.length;
 
       if (total) {
         const fromDate = new Date(`${previousDate}T12:00`).toLocaleDateString(
@@ -1913,7 +1779,7 @@
     saveDay(todayKey, { immediately: true });
   }
 
-  /** Переносит незавершённые задачи на следующий день */
+  /** Переносит незавершённые задачи на следующий день: «День» → «День», «Вечер» → «Вечер» */
   function carryOverUnfinishedTasks() {
     const day = getDay();
     const nextDate = shiftDate(state.currentDate, 1);
@@ -1924,32 +1790,19 @@
         .filter((task) => task.text.trim() && !task.done)
         .map((task) => task.text.trim());
 
-    // «Мои задачи на сегодня» → в план следующего дня (в пределах лимита)
-    const planThere = new Set(nextDay.plan.map((task) => task.text.trim()));
-    const planRoom = Math.max(0, MAX_PLAN_TASKS - nextDay.plan.length);
-    const planCandidates = unfinished(day.plan).filter(
-      (text) => !planThere.has(text),
-    );
-    const planToCarry = planCandidates.slice(0, planRoom);
+    const carry = (fromList, toList) => {
+      const existing = new Set(toList.map((task) => task.text.trim()));
+      const texts = unfinished(fromList).filter((text) => !existing.has(text));
+      toList.push(...texts.map((text) => ({ text, done: false })));
+      return texts.length;
+    };
 
-    // «Остальное» → в «Остальное» следующего дня
-    const tasksThere = new Set(nextDay.tasks.map((task) => task.text));
-    const tasksToCarry = unfinished(day.tasks).filter(
-      (text) => !tasksThere.has(text),
-    );
-
-    const total = planToCarry.length + tasksToCarry.length;
+    const total = carry(day.tasks, nextDay.tasks) + carry(day.eveningTasks, nextDay.eveningTasks);
     if (!total) {
-      showToast(
-        planCandidates.length
-          ? `Не больше ${MAX_PLAN_TASKS} задач на день`
-          : "Всё закрыто — переносить нечего",
-      );
+      showToast("Всё закрыто — переносить нечего");
       return;
     }
 
-    nextDay.plan.push(...planToCarry.map((text) => ({ text, done: false })));
-    nextDay.tasks.push(...tasksToCarry.map((text) => ({ text, done: false })));
     saveDay(nextDate, { immediately: true });
     showToast(`Перенесено задач: ${total}`);
   }
@@ -2209,7 +2062,6 @@
       ]);
 
       state.settings = { ...state.settings, ...(savedSettings || {}) };
-      delete state.settings.ritual; // остался от прежней версии
       state.days = savedDays.days;
       state.board = savedDays.board;
       state.isLoaded = true;
