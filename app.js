@@ -113,9 +113,22 @@
   const ZOOM_MAX = 2;
   const ZOOM_STEP = 1.25;
 
-  /* Из чего складываются очки дня */
-  const SCORE_WEIGHTS = { touches: 100 };
+  /* Одна выполненная задача = один балл. Сумма месяца считается по дням. */
   const STREAK_MIN_SCORE = 50;
+
+  /* Колонки новой таблицы «К продаже». Итог привязан к служебным id,
+     поэтому продолжает работать после переименования колонок. */
+  const SALES_DEFAULT_COLUMNS = [
+    { id: "product", title: "Продукт", role: "text" },
+    { id: "base", title: "Нефтебаза", role: "text" },
+    { id: "quantity", title: "Количество", role: "number" },
+    { id: "price", title: "Цена", role: "number" },
+    { id: "draining", title: "Под сливом", role: "number" },
+    { id: "transit", title: "В пути", role: "number" },
+    { id: "far", title: "Далеко", role: "number" },
+    { id: "total", title: "Итого", role: "total" },
+  ];
+  const SALES_TOTAL_ROLES = ["quantity", "draining", "transit", "far"];
 
   const FOCUS_SECONDS = 25 * 60;
   const BREAK_SECONDS = 5 * 60;
@@ -210,6 +223,44 @@
           z: Number(item?.z) || index + 1,
         };
       }),
+    };
+  }
+
+  function createEmptySalesTable() {
+    return {
+      columns: SALES_DEFAULT_COLUMNS.map((column) => ({ ...column })),
+      rows: [{}],
+    };
+  }
+
+  /** Приводит сохранённую таблицу к редактируемой структуре и сохраняет новые колонки. */
+  function normalizeSalesTable(saved) {
+    const sourceColumns = Array.isArray(saved?.columns)
+      ? saved.columns
+      : SALES_DEFAULT_COLUMNS;
+    const usedIds = new Set();
+    const columns = sourceColumns.map((column, index) => {
+      let id = String(column?.id || `column-${index + 1}`);
+      while (usedIds.has(id)) id = `${id}-${index + 1}`;
+      usedIds.add(id);
+      const role = ["text", "number", "total"].includes(column?.role)
+        ? column.role
+        : "text";
+      return { id, title: String(column?.title ?? "Колонка"), role };
+    });
+
+    const sourceRows = Array.isArray(saved?.rows) ? saved.rows : [{}];
+    const rows = sourceRows.map((savedRow) => {
+      const row = {};
+      columns.forEach(({ id, role }) => {
+        if (role !== "total") row[id] = String(savedRow?.[id] ?? "");
+      });
+      return row;
+    });
+
+    return {
+      columns: columns.length ? columns : createEmptySalesTable().columns,
+      rows,
     };
   }
 
@@ -324,6 +375,7 @@
         };
         day.tasks = normalizeTaskList(day.tasks);
         day.eveningTasks = normalizeTaskList(day.eveningTasks);
+        day.sales = normalizeSalesTable(day.sales);
         days[row.date] = day;
       });
       return { days, board };
@@ -412,6 +464,7 @@
       counts: {},        // { ключ счётчика: число касаний }
       tasks: [],         // «День» — [{ text, done }]
       eveningTasks: [],  // «Вечер» — [{ text, done }]
+      sales: createEmptySalesTable(), // редактируемая таблица «К продаже»
       focusSessions: 0,
       carriedOver: false, // незакрытые задачи прошлых дней уже перенесены в этот день
     };
@@ -503,7 +556,18 @@
 
   function getScore(day) {
     if (!day) return 0;
-    return Math.round(getTouchesProgress(day) * SCORE_WEIGHTS.touches);
+    return [...day.tasks, ...day.eveningTasks].filter(
+      (task) => task.done && task.text.trim(),
+    ).length;
+  }
+
+  /** Сумма очков месяца выбранного дня; в новом месяце отбор начинается заново. */
+  function getMonthScore(dateKey = state.currentDate) {
+    const month = dateKey.slice(0, 7);
+    return Object.entries(state.days).reduce(
+      (total, [date, day]) => total + (date.startsWith(month) ? getScore(day) : 0),
+      0,
+    );
   }
 
   /** Сколько дней подряд набрано не меньше STREAK_MIN_SCORE очков */
@@ -544,6 +608,7 @@
       renderMorning(),
       renderTasks(day),
       renderEveningTasks(day),
+      renderSales(day),
       renderBoard(),
       `<div class="grid grid--two">${renderFocus(day)}${renderTouches(day)}</div>`,
       renderEvening(),
@@ -1005,8 +1070,8 @@
       { weekday: "long", day: "numeric", month: "long" },
     );
     const score = getScore(day);
-    const streak = getStreak();
-    const scoreHint = `Очки дня: касания ${SCORE_WEIGHTS.touches}`;
+    const monthScore = getMonthScore();
+    const scoreHint = "1 выполненная задача = 1 балл. Очки месяца сбрасываются автоматически";
 
     return `
       <header class="header">
@@ -1026,13 +1091,13 @@
             <circle class="score__ring-track" cx="24" cy="24" r="${RING_RADIUS}" />
             <circle class="score__ring-progress" cx="24" cy="24" r="${RING_RADIUS}"
               stroke-dasharray="${RING_LENGTH}"
-              stroke-dashoffset="${RING_LENGTH * (1 - score / 100)}"
+              stroke-dashoffset="${RING_LENGTH * (1 - Math.min(score, 100) / 100)}"
               transform="rotate(-90 24 24)" />
             <text class="score__ring-value" x="24" y="29" text-anchor="middle">${score}</text>
           </svg>
           <div>
             <strong class="score__title">Очки дня</strong>
-            <span class="score__streak">Серия: <span class="score__streak-count">${streak}</span> ${plural(streak, "день", "дня", "дней")} от ${STREAK_MIN_SCORE}</span>
+            <span class="score__streak">За месяц: <span class="score__streak-count" id="month-score">${monthScore}</span> ${plural(monthScore, "балл", "балла", "баллов")}</span>
           </div>
         </div>
         ${renderUserMenu()}
@@ -1057,7 +1122,7 @@
         <button class="week__day${modifiers}" data-action="select-day" data-date="${dateKey}">
           <span class="week__weekday">${weekdayName}</span>
           <span class="week__date">${Number(dateKey.slice(8))}</span>
-          <span class="week__bar"><i class="week__bar-fill" style="width:${getScore(state.days[dateKey])}%"></i></span>
+          <span class="week__bar"><i class="week__bar-fill" style="width:${Math.min(100, getScore(state.days[dateKey]))}%"></i></span>
         </button>`;
     });
 
@@ -1199,6 +1264,77 @@
       </section>`;
   }
 
+  /* ---------- К продаже ---------- */
+
+  function salesNumber(value) {
+    const normalized = String(value ?? "").replace(/\s/g, "").replace(",", ".");
+    const number = Number(normalized);
+    return normalized && Number.isFinite(number) ? number : 0;
+  }
+
+  function getSalesTotal(table, row) {
+    const total = table.columns.reduce(
+      (sum, column) =>
+        sum + (SALES_TOTAL_ROLES.includes(column.id) ? salesNumber(row[column.id]) : 0),
+      0,
+    );
+    return new Intl.NumberFormat("ru-RU", { maximumFractionDigits: 2 }).format(total);
+  }
+
+  function renderSalesCell(row, rowIndex, column) {
+    if (column.role === "total") {
+      return `<td class="sales__total-cell"><output class="sales__total" data-sales-total="${rowIndex}">${getSalesTotal(getDay().sales, row)}</output></td>`;
+    }
+
+    return `<td><input class="input sales__input" type="text" ${column.role === "number" ? 'inputmode="decimal"' : ""}
+      data-field="sales-cell" data-row="${rowIndex}" data-column="${column.id}"
+      value="${escapeHtml(row[column.id])}" aria-label="${escapeHtml(column.title)}, строка ${rowIndex + 1}"></td>`;
+  }
+
+  function renderSales(day) {
+    const table = day.sales;
+    const headers = table.columns.map((column) => `
+      <th>
+        <div class="sales__heading">
+          <input class="sales__column-name" id="sales-column-${column.id}" type="text"
+            data-field="sales-column" data-column="${column.id}" value="${escapeHtml(column.title)}"
+            aria-label="Название колонки">
+          <button class="delete-button" type="button" data-action="delete-sales-column" data-column="${column.id}"
+            aria-label="Удалить колонку ${escapeHtml(column.title)}" ${table.columns.length === 1 ? "disabled" : ""}>×</button>
+        </div>
+      </th>`).join("");
+
+    const rows = table.rows.map((row, rowIndex) => `
+      <tr>
+        ${table.columns.map((column) => renderSalesCell(row, rowIndex, column)).join("")}
+        <td class="sales__row-actions"><button class="delete-button" type="button" data-action="delete-sales-row"
+          data-row="${rowIndex}" aria-label="Удалить строку ${rowIndex + 1}">×</button></td>
+      </tr>`).join("");
+
+    return `
+      <section class="section section--day sales">
+        ${renderSectionHeader({ badge: "Продажи", title: "К продаже", hint: "Редактируйте названия колонок и ячейки" })}
+        <div class="sales__toolbar">
+          <button class="button button--primary" type="button" data-action="add-sales-row">+ Строка</button>
+          <button class="button" type="button" data-action="add-sales-column">+ Колонка</button>
+        </div>
+        <div class="sales__scroll" tabindex="0" role="region" aria-label="Таблица «К продаже»">
+          <table class="sales__table">
+            <thead><tr>${headers}<th class="sales__actions-head"><span class="visually-hidden">Действия</span></th></tr></thead>
+            <tbody>${rows || `<tr><td class="sales__empty" colspan="${table.columns.length + 1}">Нажмите «+ Строка», чтобы добавить продукт.</td></tr>`}</tbody>
+          </table>
+        </div>
+      </section>`;
+  }
+
+  function refreshSalesTotals() {
+    const table = getDay().sales;
+    table.rows.forEach((row, index) => {
+      const output = $(`[data-sales-total="${index}"]`);
+      if (output) output.textContent = getSalesTotal(table, row);
+    });
+  }
+
   /* ---------- Стикеры ---------- */
 
   function renderSticker(sticker) {
@@ -1250,7 +1386,7 @@
       <section class="section section--evening">
         ${renderSectionHeader({ badge: "Вечер", title: "Перенос задач" })}
         <button class="button button--dusk" data-action="carry-over">
-          Перенести незакрытое на ${isToday ? "завтра" : "следующий день"}
+          Переносить незакрытое на ${isToday ? "завтра" : "следующий день"}
         </button>
       </section>`;
   }
@@ -1271,16 +1407,19 @@
 
     const valueElement = $(".score__ring-value");
     const progressElement = $(".score__ring-progress");
+    const monthScore = getMonthScore();
     if (valueElement) valueElement.textContent = score;
+    const monthElement = $("#month-score");
+    if (monthElement) monthElement.textContent = monthScore;
     if (progressElement) {
       progressElement.setAttribute(
         "stroke-dashoffset",
-        RING_LENGTH * (1 - score / 100),
+        RING_LENGTH * (1 - Math.min(score, 100) / 100),
       );
     }
 
     const weekBar = $(".week__day--current .week__bar-fill");
-    if (weekBar) weekBar.style.width = `${score}%`;
+    if (weekBar) weekBar.style.width = `${Math.min(100, score)}%`;
   }
 
   /* ========================================================================
@@ -1297,6 +1436,14 @@
     "task-text": (day, el) => {
       const list = getTaskList(day, el.dataset.list);
       list[Number(el.dataset.index)].text = el.value;
+    },
+    "sales-column": (day, el) => {
+      const column = day.sales.columns.find((item) => item.id === el.dataset.column);
+      if (column) column.title = el.value;
+    },
+    "sales-cell": (day, el) => {
+      const row = day.sales.rows[Number(el.dataset.row)];
+      if (row) row[el.dataset.column] = el.value;
     },
   };
 
@@ -1326,6 +1473,7 @@
     handler(getDay(), el);
     saveDay();
     refreshScore();
+    if (el.dataset.field === "sales-cell") refreshSalesTotals();
   });
 
   appElement.addEventListener("submit", (event) => {
@@ -1402,6 +1550,56 @@
     "delete-task": (button) => {
       const day = getDay();
       getTaskList(day, button.dataset.list).splice(Number(button.dataset.index), 1);
+      saveDay(state.currentDate, { immediately: true });
+      renderApp();
+    },
+
+    "add-sales-row": () => {
+      const table = getDay().sales;
+      table.rows.push({});
+      saveDay(state.currentDate, { immediately: true });
+      renderApp();
+      const firstColumn = table.columns.find((column) => column.role !== "total");
+      if (firstColumn) {
+        $(`[data-field="sales-cell"][data-row="${table.rows.length - 1}"][data-column="${firstColumn.id}"]`)?.focus();
+      }
+    },
+
+    "add-sales-column": () => {
+      const table = getDay().sales;
+      const column = {
+        id: `column-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
+        title: "Новая колонка",
+        role: "text",
+      };
+      table.columns.push(column);
+      saveDay(state.currentDate, { immediately: true });
+      renderApp();
+      const input = document.getElementById(`sales-column-${column.id}`);
+      input?.focus();
+      input?.select();
+    },
+
+    "delete-sales-row": (button) => {
+      const table = getDay().sales;
+      const row = table.rows[Number(button.dataset.row)];
+      if (!row) return;
+      if (Object.values(row).some((value) => String(value).trim()) &&
+        !window.confirm("Удалить строку вместе с данными?")) return;
+      table.rows.splice(Number(button.dataset.row), 1);
+      saveDay(state.currentDate, { immediately: true });
+      renderApp();
+    },
+
+    "delete-sales-column": (button) => {
+      const table = getDay().sales;
+      if (table.columns.length <= 1) return;
+      const column = table.columns.find((item) => item.id === button.dataset.column);
+      if (!column) return;
+      const hasData = table.rows.some((row) => String(row[column.id] || "").trim());
+      if (!window.confirm(`Удалить колонку «${column.title}»${hasData ? " вместе с данными" : ""}?`)) return;
+      table.columns = table.columns.filter((item) => item.id !== column.id);
+      table.rows.forEach((row) => delete row[column.id]);
       saveDay(state.currentDate, { immediately: true });
       renderApp();
     },

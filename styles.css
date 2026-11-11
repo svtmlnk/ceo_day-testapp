@@ -790,6 +790,134 @@ button {
   gap: 10px;
 }
 
+/* sales — редактируемая таблица «К продаже» */
+.sales {
+  overflow: hidden;
+}
+
+.sales__toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.sales__scroll {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  overflow-x: auto;
+  contain: inline-size;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+}
+
+.sales__table {
+  width: max-content;
+  min-width: 100%;
+  border-collapse: collapse;
+  font-variant-numeric: tabular-nums;
+}
+
+.sales__table th,
+.sales__table td {
+  min-width: 132px;
+  padding: 8px;
+  border-right: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+  text-align: left;
+  vertical-align: middle;
+}
+
+.sales__table th {
+  background: var(--sunk);
+}
+
+.sales__table tr > :last-child {
+  border-right: 0;
+}
+
+.sales__table tbody tr:last-child > td {
+  border-bottom: 0;
+}
+
+.sales__heading {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.sales__column-name {
+  width: 100%;
+  min-width: 0;
+  padding: 7px 4px;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.sales__column-name:hover,
+.sales__column-name:focus {
+  background: var(--surface);
+  border-color: var(--line);
+  outline: none;
+}
+
+.sales__input {
+  padding: 8px;
+  background: var(--surface);
+  font-size: 14px;
+}
+
+.sales__total-cell {
+  background: var(--day-soft);
+}
+
+.sales__total {
+  display: block;
+  padding: 8px;
+  color: var(--day);
+  font-weight: 800;
+  text-align: right;
+}
+
+.sales__table .sales__actions-head,
+.sales__table .sales__row-actions {
+  min-width: 44px;
+  width: 44px;
+  padding: 4px;
+  text-align: center;
+}
+
+.sales__empty {
+  padding: 20px !important;
+  color: var(--muted);
+  text-align: center !important;
+}
+
+@media (max-width: 620px) {
+  .sales .section__hint {
+    display: none;
+  }
+}
+
+.delete-button:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
 /* board + sticker — доска стикеров в стиле Miro */
 .board__toolbar {
   display: flex;
