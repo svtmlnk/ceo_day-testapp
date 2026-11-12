@@ -801,6 +801,10 @@ button {
   gap: 8px;
 }
 
+.sales__mobile-columns {
+  display: none;
+}
+
 .sales__scroll {
   width: 100%;
   min-width: 0;
@@ -896,9 +900,134 @@ button {
   text-align: center !important;
 }
 
-@media (max-width: 620px) {
+@media (max-width: 700px) {
   .sales .section__hint {
     display: none;
+  }
+
+  .sales__toolbar .button {
+    min-height: 44px;
+  }
+
+  .sales__mobile-columns {
+    display: block;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+  }
+
+  .sales__mobile-columns summary {
+    min-height: 44px;
+    padding: 12px;
+    color: var(--muted);
+    cursor: pointer;
+    font-size: 13px;
+    font-weight: 600;
+  }
+
+  .sales__mobile-columns-list {
+    display: grid;
+    gap: 8px;
+    padding: 0 10px 10px;
+  }
+
+  .sales__mobile-columns .sales__heading {
+    padding: 4px 6px;
+    background: var(--bg);
+    border-radius: 8px;
+  }
+
+  .sales__scroll {
+    overflow: visible;
+    contain: none;
+    border: 0;
+    border-radius: 0;
+  }
+
+  .sales__table,
+  .sales__table tbody {
+    display: block;
+    width: 100%;
+    min-width: 0;
+  }
+
+  .sales__table thead {
+    display: none;
+  }
+
+  .sales__table tbody {
+    display: grid;
+    gap: 12px;
+  }
+
+  .sales__table tbody tr {
+    position: relative;
+    display: grid;
+    min-width: 0;
+    padding: 10px 12px;
+    background: var(--bg);
+    border: 1px solid var(--line);
+    border-radius: 12px;
+  }
+
+  .sales__table .sales__table td,
+  .sales__table td {
+    display: grid;
+    grid-template-columns: minmax(88px, 40%) minmax(0, 1fr);
+    align-items: center;
+    gap: 8px;
+    width: auto;
+    min-width: 0;
+    padding: 4px 0;
+    border: 0;
+  }
+
+  .sales__table td::before {
+    content: attr(data-label);
+    color: var(--muted);
+    font-size: 12px;
+    font-weight: 600;
+    overflow-wrap: anywhere;
+  }
+
+  .sales__input {
+    min-height: 44px;
+    font-size: 16px;
+  }
+
+  .sales__table .sales__total-cell {
+    margin-top: 6px;
+    padding: 10px;
+    border-radius: 8px;
+  }
+
+  .sales__total {
+    padding: 0;
+  }
+
+  .sales__table .sales__row-actions {
+    display: flex;
+    justify-content: flex-end;
+    width: auto;
+    min-width: 0;
+    padding: 4px 0 0;
+  }
+
+  .sales__table .sales__row-actions::before {
+    content: "";
+  }
+
+  .sales__table .sales__row-actions .delete-button {
+    width: 44px;
+    height: 44px;
+  }
+
+  .sales__table .sales__empty {
+    display: block;
+    padding: 20px !important;
+  }
+
+  .sales__table .sales__empty::before {
+    content: none;
   }
 }
 
