@@ -243,7 +243,7 @@
       let id = String(column?.id || `column-${index + 1}`);
       while (usedIds.has(id)) id = `${id}-${index + 1}`;
       usedIds.add(id);
-      const role = ["text", "number", "total", "rowTotal"].includes(column?.role)
+      const role = ["text", "number", "total"].includes(column?.role)
         ? column.role
         : "text";
       return { id, title: String(column?.title ?? "Колонка"), role };
@@ -253,7 +253,7 @@
     const rows = sourceRows.map((savedRow) => {
       const row = {};
       columns.forEach(({ id, role }) => {
-        if (!["total", "rowTotal"].includes(role)) row[id] = String(savedRow?.[id] ?? "");
+        if (role !== "total") row[id] = String(savedRow?.[id] ?? "");
       });
       return row;
     });
@@ -1272,27 +1272,23 @@
     return normalized && Number.isFinite(number) ? number : 0;
   }
 
-  function getSalesTotal(table, row, totalColumn) {
-    const total = table.columns.reduce((sum, column) => {
-      if (["total", "rowTotal"].includes(column.role)) return sum;
-      const shouldAdd = totalColumn.role === "rowTotal"
-        ? salesNumber(row[column.id]) !== 0 || String(row[column.id] ?? "").trim() === "0"
-        : SALES_TOTAL_ROLES.includes(column.id);
-      return sum + (shouldAdd ? salesNumber(row[column.id]) : 0);
-    }, 0);
+  function getSalesTotal(table, row) {
+    const total = table.columns.reduce(
+      (sum, column) =>
+        sum + (SALES_TOTAL_ROLES.includes(column.id) ? salesNumber(row[column.id]) : 0),
+      0,
+    );
     return new Intl.NumberFormat("ru-RU", { maximumFractionDigits: 2 }).format(total);
   }
 
   function renderSalesCell(row, rowIndex, column) {
-    const label = escapeHtml(column.title);
-    if (["total", "rowTotal"].includes(column.role)) {
-      return `<td class="sales__total-cell" data-label="${label}" data-column="${column.id}"><output class="sales__total"
-        data-sales-total="${rowIndex}" data-column="${column.id}">${getSalesTotal(getDay().sales, row, column)}</output></td>`;
+    if (column.role === "total") {
+      return `<td class="sales__total-cell"><output class="sales__total" data-sales-total="${rowIndex}">${getSalesTotal(getDay().sales, row)}</output></td>`;
     }
 
-    return `<td data-label="${label}" data-column="${column.id}"><input class="input sales__input" type="text" ${column.role === "number" ? 'inputmode="decimal"' : ""}
+    return `<td><input class="input sales__input" type="text" ${column.role === "number" ? 'inputmode="decimal"' : ""}
       data-field="sales-cell" data-row="${rowIndex}" data-column="${column.id}"
-      value="${escapeHtml(row[column.id])}" aria-label="${label}, строка ${rowIndex + 1}"></td>`;
+      value="${escapeHtml(row[column.id])}" aria-label="${escapeHtml(column.title)}, строка ${rowIndex + 1}"></td>`;
   }
 
   function renderSales(day) {
@@ -1308,14 +1304,6 @@
         </div>
       </th>`).join("");
 
-    const mobileColumns = table.columns.map((column) => `
-      <div class="sales__heading">
-        <input class="sales__column-name" type="text" data-field="sales-column" data-column="${column.id}"
-          value="${escapeHtml(column.title)}" aria-label="Название колонки">
-        <button class="delete-button" type="button" data-action="delete-sales-column" data-column="${column.id}"
-          aria-label="Удалить колонку ${escapeHtml(column.title)}" ${table.columns.length === 1 ? "disabled" : ""}>×</button>
-      </div>`).join("");
-
     const rows = table.rows.map((row, rowIndex) => `
       <tr>
         ${table.columns.map((column) => renderSalesCell(row, rowIndex, column)).join("")}
@@ -1329,13 +1317,8 @@
         <div class="sales__toolbar">
           <button class="button button--primary" type="button" data-action="add-sales-row">+ Строка</button>
           <button class="button" type="button" data-action="add-sales-column">+ Колонка</button>
-          <button class="button" type="button" data-action="add-sales-total-column">+ Итого по строке</button>
         </div>
-        <details class="sales__mobile-columns">
-          <summary>Названия и удаление колонок</summary>
-          <div class="sales__mobile-columns-list">${mobileColumns}</div>
-        </details>
-        <div class="sales__scroll" role="region" aria-label="Таблица «К продаже»">
+        <div class="sales__scroll" tabindex="0" role="region" aria-label="Таблица «К продаже»">
           <table class="sales__table">
             <thead><tr>${headers}<th class="sales__actions-head"><span class="visually-hidden">Действия</span></th></tr></thead>
             <tbody>${rows || `<tr><td class="sales__empty" colspan="${table.columns.length + 1}">Нажмите «+ Строка», чтобы добавить продукт.</td></tr>`}</tbody>
@@ -1346,10 +1329,9 @@
 
   function refreshSalesTotals() {
     const table = getDay().sales;
-    $$("[data-sales-total]").forEach((output) => {
-      const row = table.rows[Number(output.dataset.salesTotal)];
-      const column = table.columns.find((item) => item.id === output.dataset.column);
-      if (row && column) output.textContent = getSalesTotal(table, row, column);
+    table.rows.forEach((row, index) => {
+      const output = $(`[data-sales-total="${index}"]`);
+      if (output) output.textContent = getSalesTotal(table, row);
     });
   }
 
@@ -1457,14 +1439,7 @@
     },
     "sales-column": (day, el) => {
       const column = day.sales.columns.find((item) => item.id === el.dataset.column);
-      if (!column) return;
-      column.title = el.value;
-      $$(`[data-field="sales-column"][data-column="${column.id}"]`).forEach((input) => {
-        if (input !== el) input.value = el.value;
-      });
-      $$(`td[data-column="${column.id}"]`).forEach((cell) => {
-        cell.dataset.label = el.value;
-      });
+      if (column) column.title = el.value;
     },
     "sales-cell": (day, el) => {
       const row = day.sales.rows[Number(el.dataset.row)];
@@ -1584,7 +1559,7 @@
       table.rows.push({});
       saveDay(state.currentDate, { immediately: true });
       renderApp();
-      const firstColumn = table.columns.find((column) => !["total", "rowTotal"].includes(column.role));
+      const firstColumn = table.columns.find((column) => column.role !== "total");
       if (firstColumn) {
         $(`[data-field="sales-cell"][data-row="${table.rows.length - 1}"][data-column="${firstColumn.id}"]`)?.focus();
       }
@@ -1603,19 +1578,6 @@
       const input = document.getElementById(`sales-column-${column.id}`);
       input?.focus();
       input?.select();
-    },
-
-    "add-sales-total-column": () => {
-      const table = getDay().sales;
-      const column = {
-        id: `row-total-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
-        title: "Итого по строке",
-        role: "rowTotal",
-      };
-      table.columns.push(column);
-      saveDay(state.currentDate, { immediately: true });
-      renderApp();
-      showToast("Добавлена колонка с суммой чисел в каждой строке");
     },
 
     "delete-sales-row": (button) => {
