@@ -71,35 +71,12 @@
     ],
   ];
 
-  /*
-   * Роли. Для каждой: название и счётчики касаний [ключ, подпись, цель по умолчанию].
-   */
-  const ROLES = {
-    manager: {
-      name: "Менеджер",
-      counters: [
-        ["calls", "Звонки", 30],
-        ["offers", "Коммерческие предложения", 5],
-        ["meetings", "Встречи и созвоны", 2],
-        ["newContacts", "Новые контакты", 5],
-      ],
-    },
-    director: {
-      name: "Руководитель",
-      counters: [
-        ["keyClients", "Касания с ключевыми клиентами", 3],
-        ["oneOnOnes", "Встречи 1:1 с командой", 2],
-        ["decisions", "Принятые решения", 5],
-        ["strategyHours", "Часы на стратегию", 2],
-      ],
-    },
-  };
-
-  const DEFAULT_ROLE = "manager";
-
-  /* Доска стикеров. Хранится в таблице tasks отдельной строкой с датой BOARD_DATE
-     (доска одна на пользователя и не привязана к дню) */
-  const BOARD_DATE = "2000-01-01";
+  /* Все данные аккаунта хранятся в одной строке tasks со служебной датой.
+     Внутри fulldata: дни, доска стикеров и местоположение погоды. */
+  const ACCOUNT_DATE = "2000-01-01";
+  const BOARD_DATE = ACCOUNT_DATE;
+  const LEGACY_SETTINGS_DATE = "2000-01-02";
+  const STORAGE_VERSION = 2;
   const STICKER_COLORS = ["yellow", "pink", "green", "blue", "orange", "purple"];
   const STICKER_SIZE = 168; // размер нового стикера
   const STICKER_MIN = 110; // меньше — не помещаются кнопки и текст
@@ -204,6 +181,19 @@
 
   const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
 
+  function normalizeLocation(saved) {
+    const lat = Number(saved?.lat);
+    const lon = Number(saved?.lon);
+    const name = String(saved?.name ?? "").trim();
+    if (!name || !Number.isFinite(lat) || !Number.isFinite(lon)) return null;
+    return {
+      name,
+      lat,
+      lon,
+      timezone: String(saved?.timezone ?? ""),
+    };
+  }
+
   /** Приводит данные доски из базы к виду { date, stickers: [{ id, x, y, w, h, color, text, z }] } */
   function normalizeBoard(saved) {
     const list = Array.isArray(saved?.stickers) ? saved.stickers : [];
@@ -275,17 +265,14 @@
 
      Все обращения к данным идут только через объект `storage`.
 
-       loadSettings() / saveSettings()  — настройки, в localStorage браузера
-                                          (отдельно для каждого пользователя)
-       loadDays()    — GET:    все дни пользователя из таблицы tasks
-       saveDay(day)  — POST:   день ещё не в базе → insert
-                       PUT:    день уже в базе → update по id строки
-       deleteDay(d)  — DELETE: удалить день из базы
-       flush()       — дождаться всех отправленных записей (нужно при выходе)
+       loadSettings() — старое локальное местоположение для переноса
+       loadDays()     — GET: данные пользователя из таблицы tasks
+       saveAll(data)  — POST/PATCH единственной строки аккаунта
+       flush()        — дождаться всех отправленных записей (нужно при выходе)
 
      Таблица tasks: id (int8), user_id (int8 → users.id), date (date),
-     fulldata (text). Один день = одна строка; весь объект дня лежит
-     в fulldata как JSON. Доска стикеров — ещё одна строка с датой BOARD_DATE.
+     fulldata (text). Одна строка на аккаунт; дни, доска и местоположение
+     лежат вместе в fulldata как JSON.
      ====================================================================== */
 
   const currentUser = window.Auth.getSession(); // null — идёт переход на страницу входа
@@ -304,26 +291,16 @@
     }
   }
 
-  function writeJson(key, value) {
-    try {
-      localStorage.setItem(key, JSON.stringify(value));
-      return true;
-    } catch (error) {
-      return false;
-    }
-  }
-
   const db = () => window.supabaseClient;
 
-  const taskRowIds = {}; // { "ГГГГ-ММ-ДД": id строки в tasks }
-  const writeQueues = {}; // { "ГГГГ-ММ-ДД": Promise } — записи одного дня идут по очереди
+  let accountRowId = null;
+  let writeQueue = Promise.resolve();
 
-  /* Записи одного дня выполняются строго друг за другом: иначе два быстрых
-     сохранения подряд создали бы две строки вместо одной. */
-  function enqueueWrite(date, job) {
-    const next = (writeQueues[date] || Promise.resolve()).then(job);
-    writeQueues[date] = next;
-    return next;
+  /* Записи идут строго по очереди, чтобы быстрые изменения не создали дубли
+     и более ранний ответ не перезаписал новое состояние аккаунта. */
+  function enqueueWrite(job) {
+    writeQueue = writeQueue.then(job);
+    return writeQueue;
   }
 
   const storage = {
@@ -335,15 +312,12 @@
       }
     },
 
+    /* Старое локальное местоположение читаем один раз для переноса в базу. */
     async loadSettings() {
       return readJson(SETTINGS_KEY_PREFIX + currentUser.id);
     },
 
-    async saveSettings(settings) {
-      return writeJson(SETTINGS_KEY_PREFIX + currentUser.id, settings);
-    },
-
-    /** GET: все дни пользователя. При ошибке бросает исключение */
+    /** GET: единая запись аккаунта или старые записи для объединения. */
     async loadDays() {
       const { data: rows, error } = await db()
         .from(TASKS_TABLE)
@@ -353,88 +327,104 @@
 
       if (error) throw error;
 
-      const days = {};
-      let board = normalizeBoard(null);
-      rows.forEach((row) => {
-        taskRowIds[row.date] = row.id;
-
+      const parsedRows = rows.map((row) => {
         let saved = null;
         try {
           saved = JSON.parse(row.fulldata);
         } catch (parseError) {
-          /* битая запись — покажем пустой день, при сохранении она перезапишется */
+          /* Повреждённую строку не переносим; остальные данные сохраняются. */
         }
-        if (row.date === BOARD_DATE) {
-          board = normalizeBoard(saved); // это доска стикеров, а не день
+        return { row, saved };
+      });
+
+      const consolidated = parsedRows.find(
+        ({ saved }) => saved?.version === STORAGE_VERSION && saved?.days,
+      );
+
+      if (consolidated) {
+        accountRowId = consolidated.row.id;
+        const days = {};
+        Object.entries(consolidated.saved.days).forEach(([date, day]) => {
+          days[date] = normalizeDay(date, day);
+        });
+        return {
+          days,
+          board: normalizeBoard(consolidated.saved.board),
+          location: normalizeLocation(consolidated.saved.location),
+          needsMigration: rows.length > 1,
+          legacyRowIds: rows.filter((row) => row.id !== accountRowId).map((row) => row.id),
+        };
+      }
+
+      /* Старый формат: собираем дни, доску и погоду из разных строк в памяти.
+         В базу новый общий объект записывается только после успешной загрузки. */
+      const days = {};
+      let board = normalizeBoard(null);
+      let location = null;
+      parsedRows.forEach(({ row, saved }) => {
+        if (row.date === ACCOUNT_DATE) {
+          accountRowId = row.id;
+          board = normalizeBoard(saved);
           return;
         }
-        const day = {
-          ...createEmptyDay(row.date),
-          ...(saved || {}),
-          date: row.date,
-        };
-        day.tasks = normalizeTaskList(day.tasks);
-        day.eveningTasks = normalizeTaskList(day.eveningTasks);
-        day.sales = normalizeSalesTable(day.sales);
-        days[row.date] = day;
+        if (row.date === LEGACY_SETTINGS_DATE) {
+          location = normalizeLocation(saved?.location);
+          return;
+        }
+        days[row.date] = normalizeDay(row.date, saved);
       });
-      return { days, board };
+
+      return {
+        days,
+        board,
+        location,
+        needsMigration: rows.length > 0,
+        legacyRowIds: rows.filter((row) => row.id !== accountRowId).map((row) => row.id),
+      };
     },
 
-    /** POST (новый день) или PUT (день уже есть в базе). Возвращает true/false */
-    saveDay(day) {
-      return enqueueWrite(day.date, async () => {
+    /** POST или PATCH единственной строки со всеми данными аккаунта. */
+    saveAll(data) {
+      return enqueueWrite(async () => {
         try {
-          const fulldata = JSON.stringify(day);
-          const rowId = taskRowIds[day.date];
-
-          if (rowId) {
+          const fulldata = JSON.stringify(data);
+          if (accountRowId) {
             const { error } = await db()
               .from(TASKS_TABLE)
               .update({ fulldata })
-              .eq("id", rowId);
+              .eq("id", accountRowId);
             if (error) throw error;
           } else {
-            const { data, error } = await db()
+            const { data: created, error } = await db()
               .from(TASKS_TABLE)
-              .insert({ user_id: currentUser.id, date: day.date, fulldata })
+              .insert({ user_id: currentUser.id, date: ACCOUNT_DATE, fulldata })
               .select("id")
               .single();
             if (error) throw error;
-            taskRowIds[day.date] = data.id;
+            accountRowId = created.id;
           }
           return true;
         } catch (error) {
-          console.error("Ошибка сохранения дня:", error);
+          console.error("Ошибка сохранения данных:", error);
           return false;
         }
       });
     },
 
-    /** DELETE: удаляет день из базы. Возвращает true/false */
-    deleteDay(date) {
-      return enqueueWrite(date, async () => {
-        try {
-          const rowId = taskRowIds[date];
-          if (rowId) {
-            const { error } = await db()
-              .from(TASKS_TABLE)
-              .delete()
-              .eq("id", rowId);
-            if (error) throw error;
-            delete taskRowIds[date];
-          }
-          return true;
-        } catch (error) {
-          console.error("Ошибка удаления дня:", error);
-          return false;
-        }
-      });
+    /* Старые строки удаляются только после успешной записи общего объекта. */
+    async deleteLegacyRows(ids) {
+      if (!ids.length) return true;
+      const { error } = await db().from(TASKS_TABLE).delete().in("id", ids);
+      if (error) {
+        console.error("Ошибка удаления старых записей:", error);
+        return false;
+      }
+      return true;
     },
 
     /** Ждёт, пока завершатся все уже отправленные записи */
     flush() {
-      return Promise.all(Object.values(writeQueues));
+      return writeQueue;
     },
   };
 
@@ -444,11 +434,7 @@
 
   const state = {
     settings: {
-      role: DEFAULT_ROLE,
-      targets: {},
-      location: null,
-      focusCollapsed: false,   // свёрнут ли раздел «Фокус»
-      touchesCollapsed: false, // свёрнут ли раздел «Касания»
+      location: null, // местоположение погоды, хранится в Supabase
     },
     weather: { status: "idle", data: null, message: "" },
     days: {}, // { "ГГГГ-ММ-ДД": day }
@@ -465,6 +451,8 @@
       tasks: [],         // «День» — [{ text, done }]
       eveningTasks: [],  // «Вечер» — [{ text, done }]
       sales: createEmptySalesTable(), // редактируемая таблица «К продаже»
+      quoteRefreshes: 0, // сколько раз цитата обновлена в этот день
+      quoteOffset: 0,    // смещение от исходной цитаты дня
       focusSessions: 0,
       carriedOver: false, // незакрытые задачи прошлых дней уже перенесены в этот день
     };
@@ -479,32 +467,43 @@
     }));
   }
 
+  function normalizeDay(date, saved) {
+    const day = {
+      ...createEmptyDay(date),
+      ...(saved || {}),
+      date,
+    };
+    day.tasks = normalizeTaskList(day.tasks);
+    day.eveningTasks = normalizeTaskList(day.eveningTasks);
+    day.sales = normalizeSalesTable(day.sales);
+    return day;
+  }
+
   /** День по дате; если записи ещё нет — создаётся пустая в памяти */
   function getDay(date = state.currentDate) {
     if (!state.days[date]) state.days[date] = createEmptyDay(date);
     return state.days[date];
   }
 
-  function getRole() {
-    return ROLES[state.settings.role] || ROLES[DEFAULT_ROLE];
-  }
-
-  function getTarget(counterKey, defaultTarget) {
-    const saved =
-      state.settings.targets?.[`${state.settings.role}:${counterKey}`];
-    return saved ?? defaultTarget;
-  }
-
   /* Сохранение с задержкой: пока человек печатает, пишем не на каждую букву */
 
   const saveTimers = {};
+
+  function createStoragePayload() {
+    return {
+      version: STORAGE_VERSION,
+      days: state.days,
+      board: state.board,
+      location: state.settings.location,
+    };
+  }
 
   function saveDay(date = state.currentDate, { immediately = false } = {}) {
     clearTimeout(saveTimers[date]);
 
     const persist = async () => {
       delete saveTimers[date];
-      const isSaved = await storage.saveDay(state.days[date]);
+      const isSaved = await storage.saveAll(createStoragePayload());
       if (!isSaved) showToast("Не удалось сохранить запись");
     };
 
@@ -513,8 +512,9 @@
   }
 
   async function saveSettings() {
-    const isSaved = await storage.saveSettings(state.settings);
-    if (!isSaved) showToast("Настройки не сохранены");
+    const isSaved = await storage.saveAll(createStoragePayload());
+    if (!isSaved) showToast("Местоположение не сохранено");
+    return isSaved;
   }
 
   /* Доска стикеров сохраняется так же: с задержкой при вводе, сразу при действиях */
@@ -525,7 +525,7 @@
 
     const persist = async () => {
       boardTimer = null;
-      const isSaved = await storage.saveDay(state.board);
+      const isSaved = await storage.saveAll(createStoragePayload());
       if (!isSaved) showToast("Не удалось сохранить стикеры");
     };
 
@@ -544,15 +544,6 @@
   /* ========================================================================
      5. Подсчёт очков и серии
      ====================================================================== */
-
-  function getTouchesProgress(day) {
-    const counters = getRole().counters;
-    const sum = counters.reduce((total, [key, , defaultTarget]) => {
-      const target = Math.max(1, getTarget(key, defaultTarget));
-      return total + Math.min(1, (day.counts[key] || 0) / target);
-    }, 0);
-    return sum / counters.length;
-  }
 
   function getScore(day) {
     if (!day) return 0;
@@ -610,12 +601,8 @@
       renderEveningTasks(day),
       renderSales(day),
       renderBoard(),
-      `<div class="grid grid--two">${renderFocus(day)}${renderTouches(day)}</div>`,
-      renderEvening(),
       renderFooter(),
     ].join("");
-
-    renderTimer();
 
     applyBoardView();
   }
@@ -925,7 +912,7 @@
     const query = rawQuery.trim().slice(0, MAX_LOCATION_LENGTH);
 
     if (!query) {
-      // пустое поле — убираем место
+      // пустое поле — убираем место и в базе тоже
       weatherRequestId++;
       state.settings.location = null;
       saveSettings();
@@ -946,13 +933,16 @@
         return;
       }
 
-      const data = await fetchForecast(location);
-      if (requestId !== weatherRequestId) return;
-
-      state.settings.location = location; // запоминаем место пользователя
-      saveSettings();
+      // Сначала сохраняем найденное место: даже сбой сервиса прогноза
+      // больше не приведёт к потере введённого города после перезагрузки.
+      state.settings.location = location;
       const input = $("#weather-input");
       if (input) input.value = location.name;
+      await saveSettings();
+      if (requestId !== weatherRequestId) return;
+
+      const data = await fetchForecast(location);
+      if (requestId !== weatherRequestId) return;
       setWeather({ status: "ready", data });
     } catch (error) {
       if (requestId !== weatherRequestId) return;
@@ -1132,16 +1122,21 @@
   /* ---------- Утро ---------- */
 
   function renderMorning() {
-    const [quoteText, quoteAuthor] = pickForDate(QUOTES, state.currentDate);
+    const day = getDay();
+    const offset = Number(day.quoteOffset) || 0;
+    const refreshes = Number(day.quoteRefreshes) || 0;
+    const remaining = Math.max(0, 5 - refreshes);
+    const quoteIndex = (((getDayNumber(state.currentDate) + offset) % QUOTES.length) + QUOTES.length) % QUOTES.length;
+    const [quoteText, quoteAuthor] = QUOTES[quoteIndex];
     return `
-      <section class="section section--morning">
+      <section class="section section--morning section--compact">
         <div class="section__header">
           <span class="section__badge">Утро</span>
           <h2 class="section__title">Настрой</h2>
-          <span class="section__hint">15 минут до первых дел</span>
+          <button class="button quote__refresh" type="button" data-action="refresh-quote"
+            title="Осталось обновлений: ${remaining}" ${remaining === 0 ? "disabled" : ""}>Обновить</button>
         </div>
-
-        <figure class="quote">
+        <figure class="quote" title="${escapeHtml(quoteText)} — ${escapeHtml(quoteAuthor)}">
           <blockquote class="quote__text">«${escapeHtml(quoteText)}»</blockquote>
           <figcaption class="quote__author">— ${escapeHtml(quoteAuthor)}</figcaption>
         </figure>
@@ -1183,60 +1178,22 @@
       </section>`;
   }
 
-  /* ---------- Касания ---------- */
-
-  function renderCounter([key, name, defaultTarget], day) {
-    const value = day.counts[key] || 0;
-    const target = getTarget(key, defaultTarget);
-    const percent = Math.min(100, (value / Math.max(1, target)) * 100);
-
-    return `
-      <div class="counter${value >= target ? " counter--reached" : ""}">
-        <span class="counter__title">${escapeHtml(name)}</span>
-        <div class="counter__value">
-          <b class="counter__current">${value}</b>
-          <span class="counter__target">/ ${target}</span>
-        </div>
-        <div class="counter__progress"><i class="counter__progress-fill" style="width:${percent}%"></i></div>
-        <div class="counter__buttons">
-          <button class="counter__button" type="button" data-action="change-counter" data-counter="${key}" data-step="-1" aria-label="Минус">−</button>
-          <button class="counter__button counter__button--plus" type="button" data-action="change-counter" data-counter="${key}" data-step="1" aria-label="Плюс">+</button>
-        </div>
-      </div>`;
-  }
-
-  function renderTouches(day) {
-    const collapsed = Boolean(state.settings.touchesCollapsed);
-    const counters = getRole().counters.map((counter) =>
-      renderCounter(counter, day),
-    );
-    const reached = getRole().counters.filter(
-      ([key, , defaultTarget]) =>
-        (day.counts[key] || 0) >= getTarget(key, defaultTarget),
-    ).length;
-
-    return `
-      <section class="section section--day${collapsed ? " section--collapsed" : ""}">
-        ${renderSectionHeader({
-          badge: "День",
-          title: "Касания",
-          hint: collapsed
-            ? `Выполнено целей: ${reached}/${getRole().counters.length}`
-            : "Активность, которую вы контролируете",
-          collapsed,
-          toggleKey: "touches",
-        })}
-        <div class="counters">${counters.join("")}</div>
-      </section>`;
-  }
-
   /* ---------- Задачи («День» и «Вечер») ---------- */
 
-  function renderTask(task, index, list) {
+  function renderTask(task, index, list, total) {
     return `
-      <div class="task">
+      <div class="task" data-task-row data-list="${list}" data-index="${index}">
         <input class="checkbox" type="checkbox" data-field="task-done" data-list="${list}" data-index="${index}" ${task.done ? "checked" : ""} aria-label="Готово">
         <input class="input${task.done ? " input--done" : ""}" id="${list}-${index}" data-field="task-text" data-list="${list}" data-index="${index}" value="${escapeHtml(task.text)}" placeholder="Задача">
+        <button class="task__drag-handle" type="button" data-task-drag-handle data-list="${list}" data-index="${index}"
+          aria-label="Перетащить задачу. Можно также использовать стрелки вверх и вниз"
+          title="Зажмите и перетащите задачу" ${total < 2 ? "disabled" : ""}>
+          <svg viewBox="0 0 16 20" aria-hidden="true" focusable="false">
+            <circle cx="5" cy="4" r="1.5"/><circle cx="11" cy="4" r="1.5"/>
+            <circle cx="5" cy="10" r="1.5"/><circle cx="11" cy="10" r="1.5"/>
+            <circle cx="5" cy="16" r="1.5"/><circle cx="11" cy="16" r="1.5"/>
+          </svg>
+        </button>
         <button class="delete-button" data-action="delete-task" data-list="${list}" data-index="${index}" aria-label="Удалить">×</button>
       </div>`;
   }
@@ -1246,7 +1203,7 @@
       <section class="section section--day">
         ${renderSectionHeader({ badge: "День", title: "Задачи" })}
         <div class="tasks">
-          ${day.tasks.map((task, index) => renderTask(task, index, "tasks")).join("")}
+          ${day.tasks.map((task, index) => renderTask(task, index, "tasks", day.tasks.length)).join("")}
           <button class="add-button" data-action="add-task" data-list="tasks">+ Задача</button>
         </div>
       </section>`;
@@ -1258,7 +1215,7 @@
       <section class="section section--evening">
         ${renderSectionHeader({ badge: "Вечер", title: "Задачи" })}
         <div class="tasks">
-          ${day.eveningTasks.map((task, index) => renderTask(task, index, "eveningTasks")).join("")}
+          ${day.eveningTasks.map((task, index) => renderTask(task, index, "eveningTasks", day.eveningTasks.length)).join("")}
           <button class="add-button" data-action="add-task" data-list="eveningTasks">+ Задача</button>
         </div>
       </section>`;
@@ -1396,8 +1353,8 @@
   function renderFooter() {
     return `
       <footer class="footer">
-        <span class="footer__note">Записи сохраняются в вашем аккаунте. Роль: ${getRole().name.toLowerCase()}.</span>
-        <button class="footer__link" data-action="open-settings">Настройки: роль и цели</button>
+        <span class="footer__note">Записи сохраняются в вашем аккаунте.</span>
+        <button class="footer__link" type="button" disabled aria-disabled="true">Настройки</button>
       </footer>`;
   }
 
@@ -1429,6 +1386,18 @@
   /* Список задач по data-list: «tasks» — день, «eveningTasks» — вечер */
   function getTaskList(day, list) {
     return list === "eveningTasks" ? day.eveningTasks : day.tasks;
+  }
+
+  function moveTask(listName, from, to) {
+    const list = getTaskList(getDay(), listName);
+    if (from === to || from < 0 || to < 0 || from >= list.length || to >= list.length) {
+      return false;
+    }
+    const [task] = list.splice(from, 1);
+    list.splice(to, 0, task);
+    saveDay(state.currentDate, { immediately: true });
+    renderApp();
+    return true;
   }
 
   /* Ввод текста: обновляем день и сохраняем с задержкой, без перерисовки */
@@ -1492,8 +1461,20 @@
     renderApp();
   });
 
-  /* Enter в поле задачи создаёт новую задачу под ней */
+  /* Enter в поле задачи создаёт новую задачу под ней; стрелки на иконке —
+     доступная альтернатива перетаскиванию с клавиатуры. */
   appElement.addEventListener("keydown", (event) => {
+    const dragHandle = event.target.closest?.("[data-task-drag-handle]");
+    if (dragHandle && ["ArrowUp", "ArrowDown"].includes(event.key)) {
+      event.preventDefault();
+      const from = Number(dragHandle.dataset.index);
+      const to = from + (event.key === "ArrowUp" ? -1 : 1);
+      if (moveTask(dragHandle.dataset.list, from, to)) {
+        $(`[data-task-drag-handle][data-list="${dragHandle.dataset.list}"][data-index="${to}"]`)?.focus();
+      }
+      return;
+    }
+
     if (event.key !== "Enter" || event.target.dataset?.field !== "task-text")
       return;
 
@@ -1516,25 +1497,13 @@
 
     "select-day": (button) => showDay(button.dataset.date),
 
-    "toggle-section": (button) => {
-      const key =
-        button.dataset.section === "focus" ? "focusCollapsed" : "touchesCollapsed";
-      state.settings = { ...state.settings, [key]: !state.settings[key] };
-      saveSettings();
-      renderApp();
-    },
-
-    "change-counter": (button) => {
+    "refresh-quote": () => {
       const day = getDay();
-      const key = button.dataset.counter;
-      const step = Number(button.dataset.step);
-      const [, , defaultTarget] = getRole().counters.find(([k]) => k === key);
-
-      day.counts[key] = Math.max(0, (day.counts[key] || 0) + step);
-      if (step > 0 && day.counts[key] === getTarget(key, defaultTarget)) {
-        showToast("Цель по касаниям выполнена!");
-      }
-      saveDay();
+      const refreshes = Number(day.quoteRefreshes) || 0;
+      if (refreshes >= 5) return;
+      day.quoteRefreshes = refreshes + 1;
+      day.quoteOffset = (Number(day.quoteOffset) || 0) + 1;
+      saveDay(state.currentDate, { immediately: true });
       renderApp();
     },
 
@@ -1618,10 +1587,6 @@
     "delete-sticker": (button) => deleteSticker(button.dataset.id),
 
     "cycle-sticker-color": (button) => cycleStickerColor(button.dataset.id),
-
-    "carry-over": carryOverUnfinishedTasks,
-
-    "open-settings": openSettings,
 
     "timer-toggle": toggleTimer,
 
@@ -1759,6 +1724,60 @@
     },
     { passive: false },
   );
+
+  /* Перестановка задач: Pointer Events одинаково работают с мышью, пальцем и пером. */
+  let taskDrag = null;
+
+  appElement.addEventListener("pointerdown", (event) => {
+    const handle = event.target.closest("[data-task-drag-handle]");
+    if (!handle || handle.disabled || event.button > 0) return;
+
+    const row = handle.closest("[data-task-row]");
+    if (!row) return;
+    event.preventDefault();
+    handle.focus();
+    handle.setPointerCapture(event.pointerId);
+    row.classList.add("task--dragging");
+
+    taskDrag = {
+      handle,
+      row,
+      pointerId: event.pointerId,
+      list: row.dataset.list,
+      from: Number(row.dataset.index),
+      to: Number(row.dataset.index),
+      startY: event.clientY,
+    };
+  });
+
+  appElement.addEventListener("pointermove", (event) => {
+    if (!taskDrag || event.pointerId !== taskDrag.pointerId) return;
+    event.preventDefault();
+
+    taskDrag.row.style.transform = `translateY(${event.clientY - taskDrag.startY}px)`;
+    const siblings = [...taskDrag.row.parentElement.querySelectorAll("[data-task-row]")]
+      .filter((row) => row !== taskDrag.row);
+    taskDrag.to = siblings.reduce(
+      (index, row) => {
+        const rect = row.getBoundingClientRect();
+        return index + (event.clientY > rect.top + rect.height / 2 ? 1 : 0);
+      },
+      0,
+    );
+  }, { passive: false });
+
+  function endTaskDrag(event, cancelled = false) {
+    if (!taskDrag || event.pointerId !== taskDrag.pointerId) return false;
+    const current = taskDrag;
+    taskDrag = null;
+    current.row.classList.remove("task--dragging");
+    current.row.style.transform = "";
+
+    if (!cancelled && moveTask(current.list, current.from, current.to)) {
+      $(`[data-task-drag-handle][data-list="${current.list}"][data-index="${current.to}"]`)?.focus();
+    }
+    return true;
+  }
 
   /* Сдвиг доски: зажать левую кнопку (или палец) на пустом месте и тянуть */
   let pan = null;
@@ -1907,13 +1926,16 @@
     saveBoard({ immediately: true });
   }
 
-  appElement.addEventListener("pointerup", endDrag);
-  appElement.addEventListener("pointercancel", endDrag);
+  appElement.addEventListener("pointerup", (event) => {
+    if (!endTaskDrag(event)) endDrag(event);
+  });
+  appElement.addEventListener("pointercancel", (event) => {
+    if (!endTaskDrag(event, true)) endDrag(event);
+  });
 
-  /** Открывает день. Сегодняшний день при первом открытии получает незакрытые задачи прошлых дней */
+  /** Открывает выбранный день без автоматического переноса задач. */
   function showDay(dateKey) {
     state.currentDate = dateKey;
-    if (dateKey === getTodayKey()) carryOverIntoToday();
     renderApp();
   }
 
@@ -2111,69 +2133,6 @@
   }
 
   /* ========================================================================
-     9. Окно настроек
-     ====================================================================== */
-
-  const settingsDialog = $("#settings-dialog");
-  const settingsForm = $("#settings-form");
-  let draftRole = DEFAULT_ROLE; // роль, выбранная в окне, но ещё не сохранённая
-
-  function openSettings() {
-    draftRole = state.settings.role;
-    renderSettingsRole();
-    settingsDialog.showModal();
-  }
-
-  /* Подсвечивает выбранную роль и показывает цели именно для неё */
-  function renderSettingsRole() {
-    $$("#settings-role button").forEach((button) => {
-      button.setAttribute("aria-pressed", button.dataset.role === draftRole);
-    });
-
-    $("#settings-targets").innerHTML = ROLES[draftRole].counters
-      .map(([key, name, defaultTarget]) => {
-        const savedTarget = state.settings.targets?.[`${draftRole}:${key}`];
-        return `
-          <label class="dialog__target" for="target-${key}">
-            <span>${escapeHtml(name)}</span>
-            <input class="input input--number" type="number" min="0" id="target-${key}" data-target="${key}" value="${savedTarget ?? defaultTarget}">
-          </label>`;
-      })
-      .join("");
-  }
-
-  $$("#settings-role button").forEach((button) => {
-    button.addEventListener("click", () => {
-      draftRole = button.dataset.role;
-      renderSettingsRole();
-    });
-  });
-
-  $("#settings-cancel").addEventListener("click", () => settingsDialog.close());
-
-  settingsForm.addEventListener("submit", (event) => {
-    event.preventDefault();
-
-    const targets = { ...(state.settings.targets || {}) };
-    $$("[data-target]").forEach((input) => {
-      const value = parseInt(input.value, 10);
-      if (!Number.isNaN(value))
-        targets[`${draftRole}:${input.dataset.target}`] = value;
-    });
-
-    state.settings = {
-      ...state.settings,
-      role: draftRole,
-      targets,
-    };
-
-    saveSettings();
-    settingsDialog.close();
-    renderApp();
-    showToast("Настройки сохранены");
-  });
-
-  /* ========================================================================
      10. Уведомления
      ====================================================================== */
 
@@ -2259,11 +2218,27 @@
         storage.loadDays(),
       ]);
 
-      state.settings = { ...state.settings, ...(savedSettings || {}) };
+      state.settings.location = savedDays.location;
       state.days = savedDays.days;
       state.board = savedDays.board;
+
+      // Однократно переносим город из старого localStorage, если в базе его ещё нет.
+      const legacyLocation = normalizeLocation(savedSettings?.location);
+      if (!state.settings.location && legacyLocation) {
+        state.settings.location = legacyLocation;
+      }
+
+      /* Объединяем старые строки. Сначала сохраняем полную копию, затем удаляем
+         старые строки: при ошибке записи исходные данные остаются нетронутыми. */
+      if (savedDays.needsMigration || legacyLocation) {
+        const isSaved = await storage.saveAll(createStoragePayload());
+        if (isSaved) {
+          await storage.deleteLegacyRows(savedDays.legacyRowIds);
+        } else {
+          showToast("Не удалось объединить старые записи. Попробуйте обновить страницу");
+        }
+      }
       state.isLoaded = true;
-      carryOverIntoToday();
     } catch (error) {
       // Не рисуем пустой день: сохранение поверх него могло бы создать дубли
       console.error("Ошибка загрузки данных:", error);

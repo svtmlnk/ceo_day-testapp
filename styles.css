@@ -534,29 +534,85 @@ button {
    6. Блоки дня
    ========================================================================== */
 
-/* quote — цитата дня */
+/* quote — компактная цитата дня в одну строку */
+.section--compact {
+  flex-direction: row;
+  align-items: center;
+  gap: 14px;
+  padding: 12px 16px;
+}
+
+.section--compact .section__header {
+  flex: none;
+}
+
 .quote {
-  display: grid;
+  display: flex;
+  flex: 1;
+  align-items: center;
+  min-width: 0;
   margin: 0;
-  gap: 6px;
-  padding: 4px 2px 2px;
+  gap: 8px;
 }
 
 .quote__text {
-  max-width: 40ch;
+  flex: 1;
+  min-width: 0;
   margin: 0;
+  overflow: hidden;
   font-family: var(--font-quote);
   font-style: italic;
-  font-size: clamp(20px, 3.2vw, 27px);
+  font-size: 17px;
   line-height: 1.3;
-  text-wrap: balance;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .quote__author {
+  flex: none;
+  max-width: 190px;
+  overflow: hidden;
+  color: var(--muted);
   font-size: 13px;
   font-style: normal;
   font-weight: 600;
-  color: var(--muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.quote__refresh {
+  min-height: 36px;
+  white-space: nowrap;
+}
+
+.quote__refresh:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+@media (max-width: 620px) {
+  .section--compact {
+    gap: 8px;
+    padding: 10px 12px;
+  }
+
+  .section--compact .section__badge,
+  .quote__author {
+    display: none;
+  }
+
+  .section--compact .section__header {
+    gap: 6px;
+  }
+
+  .quote__refresh {
+    padding: 0 8px;
+    font-size: 12px;
+  }
+
+  .quote__text {
+    font-size: 15px;
+  }
 }
 
 /* plan — «Мои задачи на сегодня»: крупное поле ввода под цитатой */
@@ -785,9 +841,67 @@ button {
 }
 
 .task {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 10px;
+  border-radius: 10px;
+}
+
+.task__drag-handle {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 34px;
+  height: 38px;
+  padding: 0;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--muted);
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.task__drag-handle svg {
+  width: 16px;
+  height: 20px;
+  fill: currentColor;
+  pointer-events: none;
+}
+
+.task__drag-handle:hover:not(:disabled) {
+  border-color: var(--day);
+  color: var(--day);
+}
+
+.task__drag-handle:active:not(:disabled) {
+  cursor: grabbing;
+}
+
+.task__drag-handle:disabled {
+  opacity: 0.3;
+  cursor: default;
+}
+
+.task--dragging {
+  z-index: 10;
+  background: var(--surface);
+  box-shadow: 0 8px 24px rgba(21, 26, 44, 0.18);
+  opacity: 0.94;
+}
+
+@media (max-width: 520px) {
+  .task {
+    gap: 6px;
+  }
+
+  .task__drag-handle {
+    width: 38px;
+    height: 42px;
+  }
 }
 
 /* sales — редактируемая таблица «К продаже» */
@@ -1261,6 +1375,12 @@ button {
   font-weight: 600;
   text-decoration: underline;
   text-underline-offset: 3px;
+}
+
+.footer__link:disabled {
+  opacity: 0.5;
+  cursor: default;
+  text-decoration: none;
 }
 
 /* dialog — окно настроек */

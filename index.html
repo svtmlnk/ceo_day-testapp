@@ -26,51 +26,6 @@
     <!-- Основное содержимое рисуется из app.js -->
     <main class="page" id="app"></main>
 
-    <!-- Настройки: роль и цели касаний -->
-    <dialog class="dialog" id="settings-dialog">
-      <form class="dialog__form" id="settings-form">
-        <header class="dialog__header">
-          <h2 class="dialog__title">Настройки</h2>
-        </header>
-
-        <div class="dialog__body">
-          <div class="field">
-            <span class="field__label">Моя роль</span>
-            <div class="segmented" id="settings-role">
-              <button
-                class="segmented__option"
-                type="button"
-                data-role="manager"
-              >
-                Менеджер по продажам
-              </button>
-              <button
-                class="segmented__option"
-                type="button"
-                data-role="director"
-              >
-                Руководитель
-              </button>
-            </div>
-          </div>
-
-          <div class="field">
-            <span class="field__label">Цели касаний на день</span>
-            <div class="dialog__targets" id="settings-targets"></div>
-          </div>
-        </div>
-
-        <footer class="dialog__footer">
-          <button class="button" type="button" id="settings-cancel">
-            Отмена
-          </button>
-          <button class="button button--primary" type="submit">
-            Сохранить
-          </button>
-        </footer>
-      </form>
-    </dialog>
-
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.117.3/dist/umd/supabase.min.js"></script>
     <script src="./supabase-client.js"></script>
     <script src="./app.js"></script>
