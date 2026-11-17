@@ -505,10 +505,12 @@
       delete saveTimers[date];
       const isSaved = await storage.saveAll(createStoragePayload());
       if (!isSaved) showToast("Не удалось сохранить запись");
+      return isSaved;
     };
 
-    if (immediately) persist();
-    else saveTimers[date] = setTimeout(persist, SAVE_DELAY_MS);
+    if (immediately) return persist();
+    saveTimers[date] = setTimeout(persist, SAVE_DELAY_MS);
+    return Promise.resolve(true);
   }
 
   async function saveSettings() {
@@ -1933,7 +1935,7 @@
     if (!endTaskDrag(event, true)) endDrag(event);
   });
 
-  /** Открывает выбранный день без автоматического переноса задач. */
+  /** Открывает выбранный день. Автоперенос выполняется только для реального «сегодня». */
   function showDay(dateKey) {
     state.currentDate = dateKey;
     renderApp();
@@ -1941,19 +1943,19 @@
 
   /**
    * Автоперенос: незакрытые задачи («День» и «Вечер») из ближайшего
-   * предыдущего дня, где были задачи, попадают в сегодняшний день.
-   * Срабатывает один раз за день (флаг carriedOver хранится в записи дня),
+   * предыдущего дня с невыполненными задачами попадают в сегодняшний день.
+   * Срабатывает один раз за день (флаг carriedOver хранится в базе),
    * поэтому удалённая задача не вернётся. Прошлые дни не меняются.
    */
-  function carryOverIntoToday() {
+  async function carryOverIntoToday() {
     const todayKey = getTodayKey();
     const today = getDay(todayKey);
-    if (today.carriedOver) return;
+    if (today.carriedOver) return true;
 
-    const hasTasks = (day) =>
-      [...day.tasks, ...day.eveningTasks].some((task) => task.text.trim());
+    const hasUnfinished = (day) =>
+      [...day.tasks, ...day.eveningTasks].some((task) => task.text.trim() && !task.done);
     const previousDate = Object.keys(state.days)
-      .filter((date) => date < todayKey && hasTasks(state.days[date]))
+      .filter((date) => date < todayKey && hasUnfinished(state.days[date]))
       .sort()
       .pop();
 
@@ -1996,35 +1998,9 @@
     }
 
     today.carriedOver = true;
-    saveDay(todayKey, { immediately: true });
-  }
-
-  /** Переносит незавершённые задачи на следующий день: «День» → «День», «Вечер» → «Вечер» */
-  function carryOverUnfinishedTasks() {
-    const day = getDay();
-    const nextDate = shiftDate(state.currentDate, 1);
-    const nextDay = getDay(nextDate);
-
-    const unfinished = (list) =>
-      list
-        .filter((task) => task.text.trim() && !task.done)
-        .map((task) => task.text.trim());
-
-    const carry = (fromList, toList) => {
-      const existing = new Set(toList.map((task) => task.text.trim()));
-      const texts = unfinished(fromList).filter((text) => !existing.has(text));
-      toList.push(...texts.map((text) => ({ text, done: false })));
-      return texts.length;
-    };
-
-    const total = carry(day.tasks, nextDay.tasks) + carry(day.eveningTasks, nextDay.eveningTasks);
-    if (!total) {
-      showToast("Всё закрыто — переносить нечего");
-      return;
-    }
-
-    saveDay(nextDate, { immediately: true });
-    showToast(`Перенесено задач: ${total}`);
+    const isSaved = await saveDay(todayKey, { immediately: true });
+    if (!isSaved) today.carriedOver = false; // при следующем открытии перенос повторится
+    return isSaved;
   }
 
   /* ========================================================================
@@ -2239,6 +2215,7 @@
         }
       }
       state.isLoaded = true;
+      await carryOverIntoToday();
     } catch (error) {
       // Не рисуем пустой день: сохранение поверх него могло бы создать дубли
       console.error("Ошибка загрузки данных:", error);
@@ -2253,18 +2230,30 @@
 
   window.addEventListener("resize", applyBoardView);
 
-  /* Вкладка простояла открытой за полночь: при возврате на неё открываем новый «сегодня» */
+  /* После полуночи переносим задачи и открываем новый «сегодня». Проверка по
+     таймеру работает в открытой вкладке, visibilitychange — после сна устройства. */
   let knownToday = getTodayKey();
-  document.addEventListener("visibilitychange", () => {
-    if (document.hidden || !state.isLoaded) return;
 
+  async function syncToday({ retrySameDay = false } = {}) {
+    if (!state.isLoaded) return;
     const today = getTodayKey();
-    if (today === knownToday) return;
+    if (today === knownToday) {
+      if (retrySameDay) await carryOverIntoToday();
+      return;
+    }
 
     const wasOnToday = state.currentDate === knownToday;
     knownToday = today;
+    await carryOverIntoToday();
     if (wasOnToday) showDay(today);
+  }
+
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden) syncToday({ retrySameDay: true });
   });
+  setInterval(() => {
+    if (!document.hidden) syncToday();
+  }, 60000);
 
   init();
 })();
