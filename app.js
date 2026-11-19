@@ -455,6 +455,7 @@
       quoteOffset: 0,    // смещение от исходной цитаты дня
       focusSessions: 0,
       carriedOver: false, // незакрытые задачи прошлых дней уже перенесены в этот день
+      salesCarriedOver: false, // заполненные строки таблицы уже перенесены в этот день
     };
   }
 
@@ -1940,21 +1941,60 @@
     renderApp();
   }
 
+  function hasSalesData(table) {
+    return Boolean(table?.rows?.some((row) =>
+      table.columns.some((column) =>
+        column.role !== "total" && String(row?.[column.id] ?? "").trim(),
+      ),
+    ));
+  }
+
+  /* Добавляет заполненные строки и недостающие колонки, не заменяя данные дня. */
+  function mergeSalesTable(sourceSaved, target) {
+    const source = normalizeSalesTable(sourceSaved);
+    const columns = target.columns.map((column) => ({ ...column }));
+    source.columns.forEach((column) => {
+      if (!columns.some((item) => item.id === column.id)) columns.push({ ...column });
+    });
+
+    const editableColumns = columns.filter((column) => column.role !== "total");
+    const copyRow = (row) => Object.fromEntries(
+      editableColumns.map((column) => [column.id, String(row?.[column.id] ?? "")]),
+    );
+    const hasData = (row) => editableColumns.some((column) => row[column.id].trim());
+    const signature = (row) => JSON.stringify(editableColumns.map((column) => row[column.id]));
+
+    const rows = target.rows.map(copyRow).filter(hasData);
+    const seen = new Set(rows.map(signature));
+    let added = 0;
+    source.rows.map(copyRow).filter(hasData).forEach((row) => {
+      const key = signature(row);
+      if (seen.has(key)) return;
+      seen.add(key);
+      rows.push(row);
+      added++;
+    });
+
+    target.columns = columns;
+    target.rows = rows.length ? rows : [{}];
+    return added;
+  }
+
   /**
-   * Автоперенос: незакрытые задачи («День» и «Вечер») из ближайшего
-   * предыдущего дня с невыполненными задачами попадают в сегодняшний день.
-   * Срабатывает один раз за день (флаг carriedOver хранится в базе),
-   * поэтому удалённая задача не вернётся. Прошлые дни не меняются.
+   * Автоперенос задач и таблицы «К продаже» из ближайших прошлых дней с данными.
+   * Отдельные флаги в базе исключают повторы; прошлые дни не изменяются.
    */
   async function carryOverIntoToday() {
     const todayKey = getTodayKey();
     const today = getDay(todayKey);
-    if (today.carriedOver) return true;
+    if (today.carriedOver && today.salesCarriedOver) return true;
 
-    const hasUnfinished = (day) =>
-      [...day.tasks, ...day.eveningTasks].some((task) => task.text.trim() && !task.done);
-    const previousDate = Object.keys(state.days)
-      .filter((date) => date < todayKey && hasUnfinished(state.days[date]))
+    const previousFlags = {
+      carriedOver: Boolean(today.carriedOver),
+      salesCarriedOver: Boolean(today.salesCarriedOver),
+    };
+    const findPreviousDate = (predicate) => Object.keys(state.days)
+      .filter((date) => date < todayKey && predicate(state.days[date]))
       .sort()
       .pop();
 
@@ -1972,33 +2012,39 @@
     };
 
     let total = 0;
-    if (previousDate) {
-      const previous = state.days[previousDate];
-
-      const dayTexts = pickUnfinished(previous.tasks, today.tasks);
-      const eveningTexts = pickUnfinished(previous.eveningTasks, today.eveningTasks);
-
-      today.tasks.push(...dayTexts.map((text) => ({ text, done: false })));
-      today.eveningTasks.push(...eveningTexts.map((text) => ({ text, done: false })));
-      total = dayTexts.length + eveningTexts.length;
-
-      if (total) {
-        const fromDate = new Date(`${previousDate}T12:00`).toLocaleDateString(
-          "ru-RU",
-          {
-            day: "numeric",
-            month: "long",
-          },
-        );
-        showToast(
-          `Перенесено с ${fromDate}: ${total} ${plural(total, "задача", "задачи", "задач")}`,
-        );
+    if (!today.carriedOver) {
+      const previousDate = findPreviousDate((day) =>
+        [...day.tasks, ...day.eveningTasks].some((task) => task.text.trim() && !task.done),
+      );
+      if (previousDate) {
+        const previous = state.days[previousDate];
+        const dayTexts = pickUnfinished(previous.tasks, today.tasks);
+        const eveningTexts = pickUnfinished(previous.eveningTasks, today.eveningTasks);
+        today.tasks.push(...dayTexts.map((text) => ({ text, done: false })));
+        today.eveningTasks.push(...eveningTexts.map((text) => ({ text, done: false })));
+        total = dayTexts.length + eveningTexts.length;
       }
+      today.carriedOver = true;
     }
 
-    today.carriedOver = true;
+    let salesRows = 0;
+    if (!today.salesCarriedOver) {
+      const previousDate = findPreviousDate((day) => hasSalesData(day.sales));
+      if (previousDate) {
+        salesRows = mergeSalesTable(state.days[previousDate].sales, today.sales);
+      }
+      today.salesCarriedOver = true;
+    }
+
+    if (total || salesRows) {
+      const parts = [];
+      if (total) parts.push(`${total} ${plural(total, "задача", "задачи", "задач")}`);
+      if (salesRows) parts.push(`${salesRows} ${plural(salesRows, "строка таблицы", "строки таблицы", "строк таблицы")}`);
+      showToast(`Перенесено на сегодня: ${parts.join(", ")}`);
+    }
+
     const isSaved = await saveDay(todayKey, { immediately: true });
-    if (!isSaved) today.carriedOver = false; // при следующем открытии перенос повторится
+    if (!isSaved) Object.assign(today, previousFlags); // при следующем открытии перенос повторится
     return isSaved;
   }
 
