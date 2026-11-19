@@ -592,26 +592,42 @@ button {
 
 @media (max-width: 620px) {
   .section--compact {
-    gap: 8px;
-    padding: 10px 12px;
+    padding: 14px 16px;
   }
 
-  .section--compact .section__badge,
-  .quote__author {
+  /* На телефоне остаются только цитата и автор. */
+  .section--compact .section__header {
     display: none;
   }
 
-  .section--compact .section__header {
+  .quote {
+    flex-direction: column;
+    align-items: flex-start;
     gap: 6px;
   }
 
-  .quote__refresh {
-    padding: 0 8px;
-    font-size: 12px;
+  .quote__text {
+    display: block;
+    width: 100%;
+
+    /* три строки текста */
+    overflow: visible;
+    font-size: 15px;
+    text-overflow: clip;
+    white-space: normal;
+
+    display: -webkit-box;
+    -webkit-line-clamp: 3;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
   }
 
-  .quote__text {
-    font-size: 15px;
+  .quote__author {
+    display: block;
+    max-width: 100%;
+    overflow: visible;
+    text-overflow: clip;
+    white-space: normal;
   }
 }
 
@@ -946,11 +962,11 @@ button {
   background: var(--sunk);
 }
 
-.sales__table tr > :last-child {
+.sales__table tr> :last-child {
   border-right: 0;
 }
 
-.sales__table tbody tr:last-child > td {
+.sales__table tbody tr:last-child>td {
   border-bottom: 0;
 }
 
@@ -1360,7 +1376,7 @@ button {
 
 .footer {
   display: flex;
-  justify-content: space-between;
+  justify-content: right;
   flex-wrap: wrap;
   gap: 10px;
   font-size: 12px;

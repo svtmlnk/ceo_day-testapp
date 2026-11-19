@@ -1355,7 +1355,6 @@
   function renderFooter() {
     return `
       <footer class="footer">
-        <span class="footer__note">Записи сохраняются в вашем аккаунте.</span>
         <button class="footer__link" type="button" disabled aria-disabled="true">Настройки</button>
       </footer>`;
   }
